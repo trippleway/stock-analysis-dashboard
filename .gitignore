@@ -1,0 +1,50 @@
+# ============================================================
+# Git Ignore
+# ============================================================
+
+# ── 絕對不能推上 GitHub！─────────────────────────────────
+.env
+.env.*
+*.key
+*.pem
+secrets.toml
+credentials.json
+
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ── 虛擬環境 ────────────────────────────────────────────
+venv/
+env/
+.venv/
+
+# ── ML 模型 ─────────────────────────────────────────────
+*.safetensors
+*.bin
+*.pt
+*.pth
+~/.cache/huggingface/
+
+# ── 大檔案 ──────────────────────────────────────────────
+data/cache/
+data/backtest_cache/
+logs/
+*.log
+
+# ── 但保留這些 ──────────────────────────────────────────
+!data/daily_picks/*.json
+!data/track_record/recommendations.csv
+
+# ── 系統與 IDE ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+!data/track_record/performance.json
