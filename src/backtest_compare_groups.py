@@ -21,6 +21,11 @@
 組 A 另外做順風／逆風拆分。SPY 從某個收盤高點起、在再次收復該高點之前，
 最低點跌幅超過 8%，整段算逆風；其餘交易日算順風。選股規則不變，
 只把落在該區段的扣成本後日報酬分開複利，用來檢查總成績是不是只靠順風段。
+這段事後標籤在高點隔天就開始算逆風，當時還沒跌到 8%，實盤不知道。
+
+即時版 realtime_regime 每個交易日只看截至當天的最高收盤價。
+收盤價低於這個高點 8% 以上才標逆風，之後要收盤創新高才解除。
+防禦版在月底換股日若處在即時逆風，該月改持有 SPY，不選個股。
 
 執行方式（於專案根目錄）：
     python src/backtest_compare_groups.py
@@ -277,6 +282,7 @@ def _portfolio_returns(
     score: pd.DataFrame,
     ready: pd.DataFrame,
     signals: list[pd.Timestamp],
+    defend_regime: pd.Series | None = None,
 ) -> tuple[pd.Series, pd.Series, dict[str, float | int]]:
     """
     依月底分數持有前 3 名，回傳未扣成本的日報酬，以及扣在換股日的成本。
@@ -286,10 +292,11 @@ def _portfolio_returns(
     成本扣在新部位的第一個持有日：先付交易成本，再吃當天漲跌。
 
     參數:
-        close: 對齊後的收盤價。
+        close: 對齊後的收盤價。防禦版需含 SPY 欄。
         score: 對齊後的技術面分數。
         ready: 是否已滿最短歷史。
         signals: 選股日。
+        defend_regime: 即時順風／逆風。換股日為逆風時，該月改持有 SPY。
 
     回傳:
         (未扣成本日報酬, 與之對齊的當日成本比例, 換股統計)。
@@ -297,6 +304,8 @@ def _portfolio_returns(
     daily_ret = close.pct_change()
     weights = pd.DataFrame(0.0, index=close.index, columns=close.columns)
     books: list[dict[str, Any]] = []
+    n_headwind_signals = 0
+    headwind_dates: list[str] = []
     for i, signal_day in enumerate(signals):
         if signal_day not in close.index:
             continue
@@ -304,9 +313,39 @@ def _portfolio_returns(
         hold = close.index[(close.index > signal_day) & (close.index <= nxt)]
         if len(hold) == 0:
             continue
+        # 換股日收盤才知道即時逆風。這個月不選個股，整個月持有 SPY。
+        regime_label = None
+        if defend_regime is not None and signal_day in defend_regime.index:
+            regime_label = str(defend_regime.loc[signal_day])
+        if regime_label == "逆風":
+            n_headwind_signals += 1
+            headwind_dates.append(signal_day.date().isoformat())
+        if regime_label == "逆風" and _BENCHMARK in close.columns:
+            if pd.notna(close.at[signal_day, _BENCHMARK]):
+                weights.loc[hold, _BENCHMARK] = 1.0
+                _log.info(
+                    "%s 即時逆風，這個月改持有 SPY，持有到 %s",
+                    signal_day.date().isoformat(),
+                    pd.Timestamp(hold[-1]).date().isoformat(),
+                )
+                cost_day = hold[0] if not books else signal_day
+                books.append(
+                    {
+                        "first_hold_day": cost_day,
+                        "weights": _target_weights([_BENCHMARK]),
+                        "defended": True,
+                        "signal": signal_day.date().isoformat(),
+                        "hold_start": pd.Timestamp(hold[0]).date().isoformat(),
+                        "hold_end": pd.Timestamp(hold[-1]).date().isoformat(),
+                        "picked": [_BENCHMARK],
+                    }
+                )
+                continue
+            _log.warning("%s 即時逆風，但沒有 SPY 收盤價，這個月保持現金", signal_day.date())
+
         tradable = (
             score.loc[signal_day].notna()
-            & close.loc[signal_day].notna()
+            & close.loc[signal_day].reindex(score.columns).notna()
             & ready.loc[signal_day].fillna(False).astype(bool)
         )
         ranked = score.loc[signal_day].loc[tradable].dropna()
@@ -328,7 +367,17 @@ def _portfolio_returns(
         # 第一筆是從現金買進，成本落在開始持有的那一天。
         # 之後的調倉在訊號日收盤換股，成本落在仍持有舊部位的那個收盤。
         cost_day = hold[0] if not books else signal_day
-        books.append({"first_hold_day": cost_day, "weights": _target_weights(picked)})
+        books.append(
+            {
+                "first_hold_day": cost_day,
+                "weights": _target_weights(picked),
+                "defended": False,
+                "signal": signal_day.date().isoformat(),
+                "hold_start": pd.Timestamp(hold[0]).date().isoformat(),
+                "hold_end": pd.Timestamp(hold[-1]).date().isoformat(),
+                "picked": list(picked),
+            }
+        )
 
     valid = daily_ret.notna() & weights.gt(0)
     effective = weights.where(valid, 0.0)
@@ -340,6 +389,19 @@ def _portfolio_returns(
     gross = portfolio.where(invested, np.nan).dropna()
 
     cost_on_day, stats = _schedule_trade_costs(books)
+    stats["n_defended_months"] = int(sum(1 for book in books if book.get("defended")))
+    stats["n_headwind_signals"] = n_headwind_signals
+    stats["headwind_signal_dates"] = headwind_dates  # type: ignore[assignment]
+    stats["months"] = [  # type: ignore[assignment]
+        {
+            "signal": book["signal"],
+            "hold_start": book["hold_start"],
+            "hold_end": book["hold_end"],
+            "picked": list(book["picked"]),
+            "defended": bool(book.get("defended")),
+        }
+        for book in books
+    ]
     costs = pd.Series(0.0, index=gross.index, dtype=float)
     for day, cost in cost_on_day.items():
         stamp = pd.Timestamp(day)
@@ -392,7 +454,11 @@ def _cumulative(daily_returns: pd.Series) -> float:
     return float(equity.iloc[-1] - 1.0)
 
 
-def run_group_backtest(tickers: list[str], years: int = 3) -> dict[str, Any]:
+def run_group_backtest(
+    tickers: list[str],
+    years: int = 3,
+    defend_regime: pd.Series | None = None,
+) -> dict[str, Any]:
     """
     對單一母體跑月底選前 3 名、持有到下月底的技術面回測。
 
@@ -405,6 +471,7 @@ def run_group_backtest(tickers: list[str], years: int = 3) -> dict[str, Any]:
     參數:
         tickers: 這一組的候選代號。
         years: 績效回看年數，從今天往前算。
+        defend_regime: 即時順風／逆風。有傳入時，換股日為逆風的月份改持有 SPY。
 
     回傳:
         含 cumulative_return（未扣成本）、cumulative_return_net（扣成本後）、
@@ -441,7 +508,16 @@ def run_group_backtest(tickers: list[str], years: int = 3) -> dict[str, Any]:
     if not signals:
         raise RuntimeError(f"{eval_start} ~ {end} 之間沒有月底換股日")
 
-    strategy_ret, trade_costs, trade_stats = _portfolio_returns(close, score, ready, signals)
+    if defend_regime is not None:
+        close = close.copy()
+        close[_BENCHMARK] = spy_close.reindex(close.index)
+    strategy_ret, trade_costs, trade_stats = _portfolio_returns(
+        close,
+        score,
+        ready,
+        signals,
+        defend_regime=defend_regime,
+    )
     if strategy_ret.empty or int(trade_stats["n_rebalances"]) == 0:
         raise RuntimeError("沒有任何一個月選到股票，無法計算績效")
 
@@ -467,6 +543,11 @@ def run_group_backtest(tickers: list[str], years: int = 3) -> dict[str, Any]:
         "n_buys": int(trade_stats["n_buys"]),
         "n_sells": int(trade_stats["n_sells"]),
         "n_name_changes": int(trade_stats["n_name_changes"]),
+        "n_defended_months": int(trade_stats.get("n_defended_months", 0)),
+        "n_headwind_signals": int(trade_stats.get("n_headwind_signals", 0)),
+        "headwind_signal_dates": list(trade_stats.get("headwind_signal_dates", [])),
+        "months": list(trade_stats.get("months", [])),
+        "gross_returns": strategy_ret,
         "avg_one_way_turnover": float(trade_stats["avg_one_way_turnover"]),
         "total_cost_rate": float(trade_stats["total_cost_rate"]),
         "cumulative_return": cumulative,
@@ -493,6 +574,80 @@ def run_group_backtest(tickers: list[str], years: int = 3) -> dict[str, Any]:
         cost_drag * 100,
     )
     return result
+
+
+def realtime_regime(
+    spy_close: pd.Series,
+    threshold: float = _DRAWDOWN_THRESHOLD,
+) -> pd.Series:
+    """
+    用截至當天的資料判斷順風或逆風。
+
+    歷史最高價是當天（含）以前的最高收盤價。收盤價低於這個高點
+    threshold 以上，當天起標成逆風。之後價格回升但還沒創新高，
+    仍然是逆風。收盤價大於等於前高，當天解除，改回順風。
+
+    這和事後回調區間不同：事後版從高點隔天就標逆風，
+    即使當時跌幅還沒到 8%。這裡要等跌幅已經發生才標。
+
+    參數:
+        spy_close: SPY 收盤價。
+        threshold: 跌幅門檻，0.08 代表 8%。
+
+    回傳:
+        與有效收盤價同索引的 Series，值為「順風」或「逆風」。
+    """
+    prices = pd.to_numeric(spy_close, errors="coerce").dropna()
+    prices = prices[~prices.index.duplicated(keep="last")].sort_index()
+    if prices.empty:
+        return pd.Series(dtype=object, name="regime")
+
+    labels: list[str] = []
+    peak = float(prices.iloc[0])
+    headwind = False
+    for px in prices.astype(float):
+        price = float(px)
+        if price >= peak:
+            peak = price
+            headwind = False
+        elif price <= peak * (1.0 - threshold):
+            headwind = True
+        labels.append("逆風" if headwind else "順風")
+    return pd.Series(labels, index=prices.index, name="regime")
+
+
+def verify_realtime_regime(
+    spy_close: pd.Series,
+    threshold: float = _DRAWDOWN_THRESHOLD,
+) -> list[str]:
+    """
+    截斷檢查：只給到第 t 天的資料，第 t 天的順風／逆風必須和完整序列一致。
+
+    參數:
+        spy_close: SPY 收盤價。
+        threshold: 與 realtime_regime 相同的跌幅門檻。
+
+    回傳:
+        不一致的日期字串。空清單表示通過。不一致的日期會直接印出。
+    """
+    prices = pd.to_numeric(spy_close, errors="coerce").dropna()
+    prices = prices[~prices.index.duplicated(keep="last")].sort_index()
+    if prices.empty:
+        print("即時逆風截斷檢查失敗：沒有 SPY 收盤價", flush=True)
+        return ["<empty>"]
+    full = realtime_regime(prices, threshold)
+    mismatches: list[str] = []
+    for pos in range(len(prices)):
+        truncated = realtime_regime(prices.iloc[: pos + 1], threshold)
+        if truncated.empty or str(truncated.iloc[-1]) != str(full.iloc[pos]):
+            mismatches.append(pd.Timestamp(prices.index[pos]).date().isoformat())
+    if mismatches:
+        print(f"即時逆風截斷檢查不一致，共 {len(mismatches)} 天：", flush=True)
+        for label in mismatches:
+            print(f"  {label}", flush=True)
+    else:
+        print(f"即時逆風截斷檢查通過：{len(prices)} 個交易日", flush=True)
+    return mismatches
 
 
 def _spy_drawdown_episodes(
@@ -887,6 +1042,176 @@ def _print_table(results: dict[str, dict[str, Any]]) -> None:
         )
 
 
+def _assert_realtime_regime_rules() -> None:
+    """用一條手算過的價格，確認跌破 8% 才進逆風、創新高才解除。"""
+    index = pd.bdate_range("2024-01-02", periods=7)
+    prices = pd.Series([100.0, 100.0, 95.0, 91.0, 95.0, 100.0, 92.0], index=index)
+    labels = realtime_regime(prices).tolist()
+    expected = ["順風", "順風", "順風", "逆風", "逆風", "順風", "逆風"]
+    if labels != expected:
+        raise AssertionError(f"即時逆風規則與手算不符：{labels}")
+    still_under = realtime_regime(prices.iloc[:5])
+    if str(still_under.iloc[-1]) != "逆風":
+        raise AssertionError("價格回到高點 5% 以內就解除逆風，與規則不符")
+
+
+def _annualized_trades(result: dict[str, Any]) -> float:
+    """年化交易次數。買進與賣出各算一次，除以持有區間的年數。"""
+    start = date.fromisoformat(str(result["start"]))
+    end = date.fromisoformat(str(result["end"]))
+    years = (end - start).days / 365.25
+    if years <= 0:
+        return float("nan")
+    return float(result["n_name_changes"]) / years
+
+
+def run_realtime_defense_compare(
+    tickers: list[str],
+    years: int = 3,
+    baseline: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    比較組 A 月度固定規則的基準版與即時逆風防禦版。
+
+    基準版每個月底照常選前 3 名。防禦版在換股日收盤已處於即時逆風時，
+    該月改持有 SPY，交易成本仍按權重變動計算。
+    截斷檢查沒過就不跑防禦版，避免把看得到未來的標籤當成可執行規則。
+
+    參數:
+        tickers: 組 A 的候選代號。
+        years: 績效回看年數。
+        baseline: 已經跑完的基準回測。有傳入就不再重算。
+
+    回傳:
+        含 baseline、defensive、mismatches 的字典。
+    """
+    _assert_realtime_regime_rules()
+    base = baseline if baseline is not None else run_group_backtest(tickers, years=years)
+    mismatches = verify_realtime_regime(base["spy_close"])
+    if mismatches:
+        raise RuntimeError("即時逆風截斷檢查不一致，防禦版比較沒有執行")
+    regime = realtime_regime(base["spy_close"])
+    defensive = run_group_backtest(tickers, years=years, defend_regime=regime)
+    return {
+        "baseline": base,
+        "defensive": defensive,
+        "mismatches": mismatches,
+    }
+
+
+def _window_return(daily: pd.Series, start: str, end: str) -> pd.Series:
+    """切出持有區間的日報酬。區間含起日與迄日。"""
+    return daily.loc[pd.Timestamp(start) : pd.Timestamp(end)]
+
+
+def _print_defended_month_gaps(baseline: dict[str, Any], defense: dict[str, Any]) -> None:
+    """
+    印出防禦版改持 SPY 的每個月：組 A 照常選股報酬、同期 SPY、兩者差距。
+
+    持有區間與回測相同，從換股日的下一個交易日到下一個換股日收盤。
+    兩邊都是這段的價格報酬，不把下一次換股的成本算進這個月。
+
+    參數:
+        baseline: 全程選股的回測結果，需含 months 與 gross_returns。
+        defense: 逆風月改持 SPY 的回測結果，用它決定哪些月份要列。
+    """
+    stock_by_signal = {month["signal"]: month for month in baseline.get("months", [])}
+    gross = baseline.get("gross_returns")
+    spy = baseline.get("spy_returns")
+    if gross is None or spy is None:
+        _log.warning("基準回測沒有日報酬，無法逐月對照")
+        return
+
+    defended = [month for month in defense.get("months", []) if month.get("defended")]
+    print("\n防禦版改持 SPY 的月份（組 A 照常選股 vs SPY）", flush=True)
+    header = f"{'持有期間':<27}{'組 A 選股':<22}{'組 A 報酬':>10}{'SPY 報酬':>10}{'差距':>10}"
+    print(header, flush=True)
+    print("-" * len(header), flush=True)
+    stock_factors: list[float] = []
+    spy_factors: list[float] = []
+    for month in defended:
+        stock_month = stock_by_signal.get(month["signal"])
+        if stock_month is None:
+            _log.warning("基準回測沒有換股日 %s", month["signal"])
+            continue
+        window = _window_return(gross, stock_month["hold_start"], stock_month["hold_end"])
+        spy_window = _window_return(spy, stock_month["hold_start"], stock_month["hold_end"]).reindex(window.index)
+        if window.empty or spy_window.isna().all():
+            _log.warning("%s 沒有可對照的日報酬", month["signal"])
+            continue
+        stock_return = _cumulative(window)
+        spy_return = _cumulative(spy_window.fillna(0.0))
+        names = ",".join(stock_month["picked"]) if stock_month["picked"] else "現金"
+        period = f"{stock_month['hold_start']} ~ {stock_month['hold_end']}"
+        print(
+            f"{period:<27}{names:<22}"
+            f"{_pct(stock_return):>10}{_pct(spy_return):>10}{_pct(stock_return - spy_return):>10}",
+            flush=True,
+        )
+        stock_factors.append(1.0 + stock_return)
+        spy_factors.append(1.0 + spy_return)
+    if stock_factors and spy_factors:
+        stock_total = float(math.prod(stock_factors) - 1.0)
+        spy_total = float(math.prod(spy_factors) - 1.0)
+        print("-" * len(header), flush=True)
+        print(
+            f"{f'這 {len(stock_factors)} 段各自複利（不含中間月份）':<49}"
+            f"{_pct(stock_total):>10}{_pct(spy_total):>10}{_pct(stock_total - spy_total):>10}",
+            flush=True,
+        )
+
+
+def _print_realtime_defense(comparison: dict[str, Any]) -> None:
+    """印出基準與即時逆風防禦的扣成本績效，並在沒有改善時如實標註。"""
+    base = comparison["baseline"]
+    defense = comparison["defensive"]
+    window = f"{base['start']} ~ {base['end']}"
+    print(f"\n=== 即時逆風防禦（組 A 月度固定，扣成本，{window}）===", flush=True)
+    print(
+        "換股日收盤價已低於截至當天的 SPY 最高收盤價 8%，該月改持有 SPY，"
+        "直到之後某個換股日收盤創新高才恢復選股。",
+        flush=True,
+    )
+    header = f"{'設定':<22}{'總報酬':>10}{'Sharpe':>8}{'最大回撤':>10}{'年化交易次數':>12}"
+    print(header, flush=True)
+    print("-" * len(header), flush=True)
+    rows = (
+        ("基準（照常選股）", base),
+        ("防禦（逆風持有 SPY）", defense),
+    )
+    for title, row in rows:
+        print(
+            f"{title:<22}"
+            f"{_pct(row['cumulative_return_net']):>10}"
+            f"{_num(row['sharpe_net']):>8}"
+            f"{_pct(row['max_drawdown_net']):>10}"
+            f"{_annualized_trades(row):>12.1f}",
+            flush=True,
+        )
+    dates = defense.get("headwind_signal_dates") or []
+    print(
+        f"逆風月份數：{defense['n_headwind_signals']}（月底換股日當天已跌破 8%）",
+        flush=True,
+    )
+    if dates:
+        print("  逆風換股日：" + ", ".join(str(item) for item in dates), flush=True)
+    print(
+        f"防禦版實際持有 SPY：{defense['n_defended_months']} 個月",
+        flush=True,
+    )
+    _print_defended_month_gaps(base, defense)
+    sharpe_better = float(defense["sharpe_net"]) > float(base["sharpe_net"])
+    # 最大回撤是負數，數值變大代表跌得比較淺
+    drawdown_better = float(defense["max_drawdown_net"]) > float(base["max_drawdown_net"])
+    print(
+        f"Sharpe {_num(base['sharpe_net'])} → {_num(defense['sharpe_net'])}，"
+        f"最大回撤 {_pct(base['max_drawdown_net'])} → {_pct(defense['max_drawdown_net'])}。",
+        flush=True,
+    )
+    if not sharpe_better or not drawdown_better:
+        print("即時版逆風防禦沒有優勢", flush=True)
+
+
 if __name__ == "__main__":
     groups = define_three_groups()
     print("=== 三組母體 ===", flush=True)
@@ -926,3 +1251,6 @@ if __name__ == "__main__":
     regime = run_regime_split_backtest(years=3, tickers=groups["A"], backtest=results["A"])
     _print_regime(regime)
     print(_interpret_regime(regime), flush=True)
+
+    defense = run_realtime_defense_compare(groups["A"], years=3, baseline=results["A"])
+    _print_realtime_defense(defense)
