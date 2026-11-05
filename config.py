@@ -171,6 +171,16 @@ FILTER_THRESHOLDS = {
     "min_volume_ratio": 0.5,
 }
 
+# ── 回測固定區間 ───────────────────────────────────────
+# 這是履歷引用數字的固定區間，修改前必須重新驗收。
+from datetime import date as _date
+
+# 評估起日。第一個換股日是之後的月底 2023-09-29，第一個持有日是 2023-10-02
+BACKTEST_START = _date(2023, 9, 22)
+BACKTEST_END = _date(2026, 9, 21)
+# 組 A 名單判斷「曾經進過 S&P 500」的迄日
+GROUP_DEFINITION_END = _date(2026, 9, 21)
+
 # ── 技術指標參數與技術面子分數權重 ─────────────────────
 TECH_PARAMS = {
     "ma_periods":        [5, 20, 60, 200],

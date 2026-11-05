@@ -56,7 +56,12 @@ from backtest_universe_sp500 import (  # noqa: E402
     compare_universes_sp500,
     get_union_universe_sp500,
 )
-from config import TICKER_LIST  # noqa: E402
+from config import (  # noqa: E402
+    BACKTEST_END,
+    BACKTEST_START,
+    GROUP_DEFINITION_END,
+    TICKER_LIST,
+)
 
 _log = logging.getLogger("backtest_compare_groups")
 if not _log.handlers:
@@ -99,7 +104,7 @@ _GROUP_TITLES = {
 
 def define_three_groups(
     start_date: date = _GROUP_START,
-    end_date: date | None = None,
+    end_date: date = GROUP_DEFINITION_END,
 ) -> dict[str, list[str]]:
     """
     用 S&P 500 時點比較結果組出三份母體。
@@ -111,12 +116,12 @@ def define_three_groups(
 
     參數:
         start_date: 判斷「曾經進過 S&P 500」的起日。
-        end_date: 迄日。None 表示今天。
+        end_date: 迄日。預設 config.GROUP_DEFINITION_END，名單不隨執行日變動。
 
     回傳:
         {"A": [...], "B": [...], "C": [...]}，代號已排序。
     """
-    end = end_date or date.today()
+    end = end_date
     current = [str(ticker).upper().strip() for ticker in TICKER_LIST if str(ticker).strip()]
     union = get_union_universe_sp500(start_date, end)
     report = compare_universes_sp500(current, union)
@@ -456,8 +461,10 @@ def _cumulative(daily_returns: pd.Series) -> float:
 
 def run_group_backtest(
     tickers: list[str],
-    years: int = 3,
+    years: int | None = None,
     defend_regime: pd.Series | None = None,
+    start_date: date = BACKTEST_START,
+    end_date: date = BACKTEST_END,
 ) -> dict[str, Any]:
     """
     對單一母體跑月底選前 3 名、持有到下月底的技術面回測。
@@ -470,18 +477,27 @@ def run_group_backtest(
 
     參數:
         tickers: 這一組的候選代號。
-        years: 績效回看年數，從今天往前算。
+        years: 舊版「從今天往回幾年」。None 時改用 start_date ~ end_date 固定區間；
+            有傳入時結果會隨執行日變動，不能拿來對照履歷數字。
         defend_regime: 即時順風／逆風。有傳入時，換股日為逆風的月份改持有 SPY。
+        start_date: 績效起日（含），預設 config.BACKTEST_START。
+        end_date: 績效迄日（含），預設 config.BACKTEST_END。
 
     回傳:
         含 cumulative_return（未扣成本）、cumulative_return_net（扣成本後）、
         cost_drag、換股統計、excess_vs_spy、sharpe、max_drawdown 的績效字典。
         另附 net_returns、spy_returns、spy_close，供順風／逆風拆分複用同一條路徑。
     """
-    if years < 1:
-        raise ValueError(f"years 必須至少 1 年，收到 {years}")
-    end = date.today()
-    eval_start = end - timedelta(days=365 * years)
+    if years is not None:
+        if years < 1:
+            raise ValueError(f"years 必須至少 1 年，收到 {years}")
+        end = date.today()
+        eval_start = end - timedelta(days=365 * years)
+    else:
+        end = end_date
+        eval_start = start_date
+    if eval_start >= end:
+        raise ValueError(f"回測起日 {eval_start} 必須早於迄日 {end}")
     fetch_start = eval_start - timedelta(days=_WARMUP_DAYS)
     symbols = [str(ticker).upper().strip() for ticker in tickers if str(ticker).strip()]
 
@@ -746,9 +762,11 @@ def _segment_performance(
 
 
 def run_regime_split_backtest(
-    years: int = 3,
+    years: int | None = None,
     tickers: list[str] | None = None,
     backtest: dict[str, Any] | None = None,
+    start_date: date = BACKTEST_START,
+    end_date: date = BACKTEST_END,
 ) -> dict[str, Any]:
     """
     把組 A 在回測期間的扣成本後日報酬切成順風段與逆風段。
@@ -763,9 +781,11 @@ def run_regime_split_backtest(
     這是事後檢查，不是可以當下使用的交易濾網。
 
     參數:
-        years: 績效回看年數。已傳入 backtest 時不再重跑。
+        years: 舊版「從今天往回幾年」。None 時用 start_date ~ end_date。已傳入 backtest 時不再重跑。
         tickers: 組 A 代號。省略時會自己重抓三組母體再取組 A。
         backtest: 已經跑完的 run_group_backtest 結果，需含 net_returns 與 spy_close。
+        start_date: 績效起日（含），預設 config.BACKTEST_START。
+        end_date: 績效迄日（含），預設 config.BACKTEST_END。
 
     回傳:
         episodes 為回調清單，segments 為順風、逆風兩列績效，
@@ -774,7 +794,12 @@ def run_regime_split_backtest(
     if backtest is None:
         if tickers is None:
             tickers = define_three_groups()["A"]
-        backtest = run_group_backtest(tickers, years=years)
+        backtest = run_group_backtest(
+            tickers,
+            years=years,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     net = backtest.get("net_returns")
     spy_ret = backtest.get("spy_returns")
@@ -1067,8 +1092,10 @@ def _annualized_trades(result: dict[str, Any]) -> float:
 
 def run_realtime_defense_compare(
     tickers: list[str],
-    years: int = 3,
+    years: int | None = None,
     baseline: dict[str, Any] | None = None,
+    start_date: date = BACKTEST_START,
+    end_date: date = BACKTEST_END,
 ) -> dict[str, Any]:
     """
     比較組 A 月度固定規則的基準版與即時逆風防禦版。
@@ -1079,19 +1106,27 @@ def run_realtime_defense_compare(
 
     參數:
         tickers: 組 A 的候選代號。
-        years: 績效回看年數。
-        baseline: 已經跑完的基準回測。有傳入就不再重算。
+        years: 舊版「從今天往回幾年」。None 時用 start_date ~ end_date。
+        baseline: 已經跑完的基準回測。有傳入就不再重算，須與這裡的區間相同。
+        start_date: 績效起日（含），預設 config.BACKTEST_START。
+        end_date: 績效迄日（含），預設 config.BACKTEST_END。
 
     回傳:
         含 baseline、defensive、mismatches 的字典。
     """
     _assert_realtime_regime_rules()
-    base = baseline if baseline is not None else run_group_backtest(tickers, years=years)
+    window = {"years": years, "start_date": start_date, "end_date": end_date}
+    base = baseline if baseline is not None else run_group_backtest(tickers, **window)
     mismatches = verify_realtime_regime(base["spy_close"])
     if mismatches:
         raise RuntimeError("即時逆風截斷檢查不一致，防禦版比較沒有執行")
     regime = realtime_regime(base["spy_close"])
-    defensive = run_group_backtest(tickers, years=years, defend_regime=regime)
+    defensive = run_group_backtest(tickers, defend_regime=regime, **window)
+    if (defensive["start"], defensive["end"]) != (base["start"], base["end"]):
+        raise RuntimeError(
+            f"防禦版區間 {defensive['start']} ~ {defensive['end']} 與基準 "
+            f"{base['start']} ~ {base['end']} 不同，無法對照"
+        )
     return {
         "baseline": base,
         "defensive": defensive,
@@ -1214,6 +1249,11 @@ def _print_realtime_defense(comparison: dict[str, Any]) -> None:
 
 if __name__ == "__main__":
     groups = define_three_groups()
+    print(
+        f"回測區間 {BACKTEST_START.isoformat()} ~ {BACKTEST_END.isoformat()}，"
+        f"組別名單迄日 {GROUP_DEFINITION_END.isoformat()}",
+        flush=True,
+    )
     print("=== 三組母體 ===", flush=True)
     for key in _GROUP_ORDER:
         print(f"{_GROUP_TITLES[key]}（{len(groups[key])} 檔）", flush=True)
@@ -1233,7 +1273,7 @@ if __name__ == "__main__":
     results: dict[str, dict[str, Any]] = {}
     for key in _GROUP_ORDER:
         print(f"\n=== 回測 {_GROUP_TITLES[key]} ===", flush=True)
-        results[key] = run_group_backtest(groups[key], years=3)
+        results[key] = run_group_backtest(groups[key])
 
     spy_return = float(results["A"]["spy_cumulative_return"])
     window = f"{results['A']['start']} ~ {results['A']['end']}"
@@ -1248,9 +1288,9 @@ if __name__ == "__main__":
             print(f"{_GROUP_TITLES[key]} 無價量而剔除: {', '.join(dropped)}", flush=True)
     print(_interpret(results), flush=True)
 
-    regime = run_regime_split_backtest(years=3, tickers=groups["A"], backtest=results["A"])
+    regime = run_regime_split_backtest(tickers=groups["A"], backtest=results["A"])
     _print_regime(regime)
     print(_interpret_regime(regime), flush=True)
 
-    defense = run_realtime_defense_compare(groups["A"], years=3, baseline=results["A"])
+    defense = run_realtime_defense_compare(groups["A"], baseline=results["A"])
     _print_realtime_defense(defense)
