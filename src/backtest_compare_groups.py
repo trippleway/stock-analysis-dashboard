@@ -58,6 +58,9 @@ from backtest_universe_sp500 import (  # noqa: E402
 )
 from config import (  # noqa: E402
     BACKTEST_END,
+    BACKTEST_FIRST_REBALANCE_MONTH,
+    BACKTEST_LAST_MONTH,
+    BACKTEST_MONTHS,
     BACKTEST_START,
     GROUP_DEFINITION_END,
     TICKER_LIST,
@@ -1250,7 +1253,9 @@ def _print_realtime_defense(comparison: dict[str, Any]) -> None:
 if __name__ == "__main__":
     groups = define_three_groups()
     print(
-        f"回測區間 {BACKTEST_START.isoformat()} ~ {BACKTEST_END.isoformat()}，"
+        f"回測規則：{BACKTEST_FIRST_REBALANCE_MONTH} 月底第一次換股，"
+        f"持有到 {BACKTEST_LAST_MONTH} 月底，共 {BACKTEST_MONTHS} 個完整月。"
+        f"日曆邊界 {BACKTEST_START.isoformat()} ~ {BACKTEST_END.isoformat()}，"
         f"組別名單迄日 {GROUP_DEFINITION_END.isoformat()}",
         flush=True,
     )

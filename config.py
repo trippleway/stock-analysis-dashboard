@@ -172,13 +172,57 @@ FILTER_THRESHOLDS = {
 }
 
 # ── 回測固定區間 ───────────────────────────────────────
-# 這是履歷引用數字的固定區間，修改前必須重新驗收。
+# 規則在看到績效之前就定好，不隨執行日移動。修改前必須重新驗收。
+# 36 個完整月：第一次換股是 BACKTEST_FIRST_REBALANCE_MONTH 的最後一個交易日，
+# 之後每個月最後一個交易日換股，持有到下一個月底。
+# 最後一個持有日是 BACKTEST_LAST_MONTH 的最後一個交易日，當天不再換股。
+# BACKTEST_START / BACKTEST_END 是這段規則的日曆邊界，由下面三個常數推導。
+# 實際換股日與持有日再依交易日曆落到月底。
 from datetime import date as _date
+from datetime import timedelta as _timedelta
 
-# 評估起日。第一個換股日是之後的月底 2023-09-29，第一個持有日是 2023-10-02
-BACKTEST_START = _date(2023, 9, 22)
-BACKTEST_END = _date(2026, 9, 21)
-# 組 A 名單判斷「曾經進過 S&P 500」的迄日
+
+def _parse_year_month(token: str) -> tuple[int, int]:
+    """把 YYYY-MM 拆成年、月。格式不對或月份超出 1–12 就拒絕。"""
+    year_text, month_text = str(token).split("-", 1)
+    year, month = int(year_text), int(month_text)
+    if month < 1 or month > 12:
+        raise ValueError(f"月份必須介於 1 到 12，收到 {token}")
+    return year, month
+
+
+def _month_index(year: int, month: int) -> int:
+    """把年、月換成可相減的月份序號。"""
+    return year * 12 + month - 1
+
+
+def _calendar_month_end(year: int, month: int) -> _date:
+    """該月的最後一個日曆日。交易日曆上的月底另由回測決定。"""
+    if month == 12:
+        next_month = _date(year + 1, 1, 1)
+    else:
+        next_month = _date(year, month + 1, 1)
+    return next_month - _timedelta(days=1)
+
+
+# 第一次換股所在月、最後一個持有月、完整月數。三個一起決定區間。
+BACKTEST_FIRST_REBALANCE_MONTH = "2023-09"
+BACKTEST_LAST_MONTH = "2026-09"
+BACKTEST_MONTHS = 36
+
+_start_year, _start_month = _parse_year_month(BACKTEST_FIRST_REBALANCE_MONTH)
+_end_year, _end_month = _parse_year_month(BACKTEST_LAST_MONTH)
+_month_span = _month_index(_end_year, _end_month) - _month_index(_start_year, _start_month)
+if _month_span != BACKTEST_MONTHS:
+    raise ValueError(
+        f"{BACKTEST_FIRST_REBALANCE_MONTH} 到 {BACKTEST_LAST_MONTH} 跨 {_month_span} 個月，"
+        f"與 BACKTEST_MONTHS={BACKTEST_MONTHS} 不一致"
+    )
+
+# 邊界含第一次換股月的整個月份，也含最後一個持有月的整個月份。
+BACKTEST_START = _date(_start_year, _start_month, 1)
+BACKTEST_END = _calendar_month_end(_end_year, _end_month)
+# 組 A 名單判斷「曾經進過 S&P 500」的迄日。這是名單定義，不是回測區間。
 GROUP_DEFINITION_END = _date(2026, 9, 21)
 
 # ── 技術指標參數與技術面子分數權重 ─────────────────────
