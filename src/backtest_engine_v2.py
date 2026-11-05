@@ -69,7 +69,7 @@ from backtest_universe_sp500 import (  # noqa: E402
     get_point_in_time_sp500,
     get_union_universe_sp500,
 )
-from config import DATA_DIR  # noqa: E402
+from config import BACKTEST_END, BACKTEST_START, DATA_DIR  # noqa: E402
 
 _log = logging.getLogger("backtest_engine_v2")
 if not _log.handlers:
@@ -722,7 +722,7 @@ def _eligible_mask(
 
 def run_event_driven_backtest(
     tickers: list[str] | None = None,
-    years: int = 3,
+    years: int | None = None,
     max_positions: int = 5,
     take_profit_pct: float = 0.25,
     stop_loss_pct: float = -0.10,
@@ -751,15 +751,16 @@ def run_event_driven_backtest(
 
     參數:
         tickers: 固定候選代號。有 as_of_universe 時可省略，改以下載聯集。
-        years: 績效回看年數，從今天往前算。有 start 時不用這個參數。
+        years: 舊版「從今天往回幾年」。None 時用 config.BACKTEST_START ~ BACKTEST_END；
+            有傳入、且沒有另外指定 start 時，才改成隨執行日變動的區間。
         max_positions: 同時最多持有幾檔。
         take_profit_pct: 停利門檻。
         stop_loss_pct: 停損門檻，負數。
         score_decay_days: 名次連續落後幾天出場。
         score_decay_rank: 前幾名仍算訊號有效。時點池約 500 檔時，前 15 名比 34 檔嚴格很多。
         n_buy: 當天分數進前幾名才考慮買進。
-        start: 績效起日（含）。None 則從今天往回 years 年。
-        end: 績效迄日（含）。None 則為今天。
+        start: 績效起日（含）。None 且沒有傳 years 時用 config.BACKTEST_START。
+        end: 績效迄日（含）。None 且沒有傳 years 時用 config.BACKTEST_END。
         as_of_universe: 季度時點成分股。None 則整段都用 tickers。
 
     回傳:
@@ -769,13 +770,15 @@ def run_event_driven_backtest(
     if max_positions < 1 or n_buy < 1:
         raise ValueError("max_positions 與 n_buy 都必須至少為 1")
 
-    end_day = end or date.today()
-    if start is None:
+    # 明確傳入 years 且沒指定 start，才用「今天往回 N 年」。其餘走固定區間。
+    if years is not None and start is None:
         if years < 1:
             raise ValueError(f"years 必須至少 1 年，收到 {years}")
+        end_day = end or date.today()
         eval_start = end_day - timedelta(days=365 * years)
     else:
-        eval_start = start
+        end_day = end if end is not None else BACKTEST_END
+        eval_start = start if start is not None else BACKTEST_START
     if eval_start > end_day:
         raise ValueError(f"回測起日 {eval_start} 晚於迄日 {end_day}")
     fetch_start = eval_start - timedelta(days=_WARMUP_DAYS)
@@ -948,7 +951,7 @@ def run_event_driven_backtest(
     n_entries = len(trades)
     n_exits = int(sum(1 for trade in trades if trade["exit_reason"] != "still_holding"))
     if daily.empty:
-        span_years = float(years)
+        span_years = max((end_day - eval_start).days / 365.25, 1 / 365.25)
     else:
         span_years = max((daily.index[-1] - daily.index[0]).days / 365.25, 1 / 365.25)
     annualized_sides = (n_entries + n_exits) / span_years
@@ -1345,7 +1348,7 @@ def _sensitivity_row(case: dict[str, Any], result: dict[str, Any]) -> dict[str, 
 
 def run_parameter_sensitivity(
     tickers: list[str],
-    years: int = 3,
+    years: int | None = None,
     baseline: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
@@ -1358,7 +1361,7 @@ def run_parameter_sensitivity(
 
     參數:
         tickers: 候選代號，通常是組 A。
-        years: 績效回看年數。
+        years: 舊版「從今天往回幾年」。None 時沿用 config 的固定區間；有傳入才覆寫。
         baseline: 已經跑完、且參數與基準相同的回測。有傳入就不再重跑基準。
 
     回傳:
@@ -1516,7 +1519,7 @@ def _neighbor_gaps(center: dict[str, Any], other: dict[str, Any]) -> list[str]:
 
 def run_local_grid_search(
     tickers: list[str],
-    years: int = 3,
+    years: int | None = None,
     reuse: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
@@ -1529,7 +1532,7 @@ def run_local_grid_search(
 
     參數:
         tickers: 候選代號，通常是組 A。
-        years: 績效回看年數。
+        years: 舊版「從今天往回幾年」。None 時沿用 config 的固定區間；有傳入才覆寫。
         reuse: 已經跑完的回測。參數對得上的格子直接沿用，不再重算。
 
     回傳:
@@ -1964,9 +1967,9 @@ if __name__ == "__main__":
         f"單邊成本 {_ONE_WAY_COST * 100:.2f}%。",
         flush=True,
     )
-    monthly = run_group_backtest(group_a, years=3)
-    monthly_regime = run_regime_split_backtest(years=3, tickers=group_a, backtest=monthly)
-    event = run_event_driven_backtest(group_a, years=3)
+    monthly = run_group_backtest(group_a)
+    monthly_regime = run_regime_split_backtest(tickers=group_a, backtest=monthly)
+    event = run_event_driven_backtest(group_a)
     if not event["lookahead_ok"]:
         print("交易鏈前視偏差檢查沒有通過，下面不把績效當成有效結果。", flush=True)
         raise SystemExit(1)
@@ -1976,11 +1979,10 @@ if __name__ == "__main__":
         flush=True,
     )
     _print_report(monthly, monthly_regime, event)
-    sensitivity = run_parameter_sensitivity(group_a, years=3, baseline=event)
+    sensitivity = run_parameter_sensitivity(group_a, baseline=event)
     _print_sensitivity(sensitivity)
     grid = run_local_grid_search(
         group_a,
-        years=3,
         reuse=[row["backtest"] for row in sensitivity if "backtest" in row],
     )
     _print_local_grid(grid)
