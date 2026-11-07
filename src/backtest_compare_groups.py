@@ -22,16 +22,16 @@ signal being especially good at picking mature stocks.
 
 Group A is also split into tailwind and headwind. A headwind episode is a stretch
 where SPY falls more than 8% from a closing high before that high is recovered.
-Other trading days are tailwind. The stored segment names stay 順風段 and 逆風段.
+Other trading days are tailwind. The stored segment names stay Tailwind and Headwind.
 The selection rule does not change. Only the after-cost daily returns inside each
 segment are compounded, to see whether the full result depends on the tailwind.
 That ex-post label starts the day after the high, before the 8% drop is known, so
 a live book would not have known it.
 
 The realtime regime looks only at the highest close through that day. A close more
-than 8% below that high is labeled 逆風, and the label clears only when the close
+than 8% below that high is labeled Headwind, and the label clears only when the close
 makes a new high. The defensive book holds SPY for a month when the month-end
-rebalance day is already in realtime 逆風, and does not pick single names.
+rebalance day is already in realtime Headwind, and does not pick single names.
 
 Run from the project root:
     python src/backtest_compare_groups.py
@@ -311,7 +311,7 @@ def _portfolio_returns(
         score: Aligned technical scores.
         ready: Whether the minimum history is met.
         signals: Selection days.
-        defend_regime: Realtime labels, stored as 順風 or 逆風. A rebalance day labeled 逆風 holds SPY for that month.
+        defend_regime: Realtime labels, stored as Tailwind or Headwind. A rebalance day labeled Headwind holds SPY for that month.
 
     Returns:
         (gross daily returns, same-day cost rates, rebalance statistics).
@@ -332,14 +332,14 @@ def _portfolio_returns(
         regime_label = None
         if defend_regime is not None and signal_day in defend_regime.index:
             regime_label = str(defend_regime.loc[signal_day])
-        if regime_label == "逆風":
+        if regime_label == "Headwind":
             n_headwind_signals += 1
             headwind_dates.append(signal_day.date().isoformat())
-        if regime_label == "逆風" and _BENCHMARK in close.columns:
+        if regime_label == "Headwind" and _BENCHMARK in close.columns:
             if pd.notna(close.at[signal_day, _BENCHMARK]):
                 weights.loc[hold, _BENCHMARK] = 1.0
                 _log.info(
-                    "%s is realtime 逆風, so this month holds SPY through %s",
+                    "%s is realtime Headwind, so this month holds SPY through %s",
                     signal_day.date().isoformat(),
                     pd.Timestamp(hold[-1]).date().isoformat(),
                 )
@@ -356,7 +356,7 @@ def _portfolio_returns(
                     }
                 )
                 continue
-            _log.warning("%s is realtime 逆風, but there is no SPY close, so this month stays in cash", signal_day.date())
+            _log.warning("%s is realtime Headwind, but there is no SPY close, so this month stays in cash", signal_day.date())
 
         tradable = (
             score.loc[signal_day].notna()
@@ -490,7 +490,7 @@ def run_group_backtest(
         tickers: Candidate symbols for this group.
         years: Legacy "years back from today". None uses the fixed start_date to end_date window.
             A value moves with the run date and cannot be compared with resume numbers.
-        defend_regime: Realtime labels, stored as 順風 or 逆風. When passed, a month whose rebalance day is 逆風 holds SPY.
+        defend_regime: Realtime labels, stored as Tailwind or Headwind. When passed, a month whose rebalance day is Headwind holds SPY.
         start_date: First performance date, inclusive. Defaults to config.BACKTEST_START.
         end_date: Last performance date, inclusive. Defaults to config.BACKTEST_END.
 
@@ -498,7 +498,7 @@ def run_group_backtest(
         A performance dict with cumulative_return (before costs), cumulative_return_net (after costs),
         cost_drag, rebalance stats, excess_vs_spy, sharpe, and max_drawdown.
         Also net_returns, spy_returns, and spy_close, so the regime split can reuse the same path.
-        The stored regime names stay 順風段 and 逆風段.
+        The stored regime names stay Tailwind and Headwind.
     """
     if years is not None:
         if years < 1:
@@ -609,14 +609,14 @@ def realtime_regime(
     threshold: float = _DRAWDOWN_THRESHOLD,
 ) -> pd.Series:
     """
-    Label each day 順風 or 逆風 using only data through that day.
+    Label each day Tailwind or Headwind using only data through that day.
 
     The running high is the highest close through today, inclusive. Once the close
-    is more than `threshold` below that high, the day is labeled 逆風. A later
-    bounce that has not made a new high stays 逆風. A close at or above the prior
-    high clears the label and the day is 順風 again.
+    is more than `threshold` below that high, the day is labeled Headwind. A later
+    bounce that has not made a new high stays Headwind. A close at or above the prior
+    high clears the label and the day is Tailwind again.
 
-    This is not the ex-post drawdown window. The ex-post version labels 逆風 from
+    This is not the ex-post drawdown window. The ex-post version labels Headwind from
     the day after the high, even when the drop has not yet reached 8%. Here the
     label waits until the drop has already happened.
 
@@ -625,7 +625,7 @@ def realtime_regime(
         threshold: Drawdown gate. 0.08 means 8%.
 
     Returns:
-        A Series aligned to the valid closes. Values are 順風 or 逆風.
+        A Series aligned to the valid closes. Values are Tailwind or Headwind.
     """
     prices = pd.to_numeric(spy_close, errors="coerce").dropna()
     prices = prices[~prices.index.duplicated(keep="last")].sort_index()
@@ -642,7 +642,7 @@ def realtime_regime(
             headwind = False
         elif price <= peak * (1.0 - threshold):
             headwind = True
-        labels.append("逆風" if headwind else "順風")
+        labels.append("Headwind" if headwind else "Tailwind")
     return pd.Series(labels, index=prices.index, name="regime")
 
 
@@ -753,7 +753,7 @@ def _segment_performance(
     Turn strategy and SPY returns on the same trading days into one comparison row.
 
     Args:
-        name: Segment name. The stored names are 順風段 and 逆風段.
+        name: Segment name. The stored names are Tailwind and Headwind.
         period: Period text printed in the table.
         strategy: Strategy daily returns for the segment.
         spy: SPY daily returns on the same dates.
@@ -783,12 +783,12 @@ def run_regime_split_backtest(
     end_date: date = BACKTEST_END,
 ) -> dict[str, Any]:
     """
-    Split Group A's after-cost daily returns into 順風段 and 逆風段.
+    Split Group A's after-cost daily returns into Tailwind and Headwind.
 
-    逆風段 is a continuous stretch where SPY falls more than 8% from a high
+    Headwind is a continuous stretch where SPY falls more than 8% from a high
     (see _spy_drawdown_episodes). The peak may sit before the backtest start,
     so a decline already underway at the start is not missed. Performance counts
-    only trading days that overlap Group A's holding days. 順風段 is every other
+    only trading days that overlap Group A's holding days. Tailwind is every other
     holding day.
 
     Selection is not rerun. Signals are still the month-end top 3 by that day's
@@ -804,7 +804,7 @@ def run_regime_split_backtest(
         end_date: Last performance date, inclusive. Defaults to config.BACKTEST_END.
 
     Returns:
-        episodes is the drawdown list. segments is the 順風段 and 逆風段 performance rows.
+        episodes is the drawdown list. segments is the Tailwind and Headwind performance rows.
         full_net is the full-window after-cost cumulative return.
     """
     if backtest is None:
@@ -821,7 +821,7 @@ def run_regime_split_backtest(
     spy_ret = backtest.get("spy_returns")
     spy_close = backtest.get("spy_close")
     if not isinstance(net, pd.Series) or net.empty:
-        raise RuntimeError("The backtest has no after-cost daily returns, so it cannot be split into 順風段 and 逆風段")
+        raise RuntimeError("The backtest has no after-cost daily returns, so it cannot be split into Tailwind and Headwind")
     if not isinstance(spy_ret, pd.Series) or not isinstance(spy_close, pd.Series):
         raise RuntimeError("The backtest has no SPY prices, so drawdowns cannot be detected")
 
@@ -868,7 +868,7 @@ def run_regime_split_backtest(
     full_net = float(backtest["cumulative_return_net"])
     if math.isfinite(full_net) and not math.isclose(combined, full_net, rel_tol=0, abs_tol=1e-8):
         _log.warning(
-            "Compounded 順風段 times 逆風段 is %.4f%%, which does not match the full after-cost %.4f%%",
+            "Compounded Tailwind times Headwind is %.4f%%, which does not match the full after-cost %.4f%%",
             combined * 100,
             full_net * 100,
         )
@@ -880,8 +880,8 @@ def run_regime_split_backtest(
     tail_period = f"{window_start.date()} ~ {window_end.date()}, excluding drawdown days"
 
     segments = [
-        _segment_performance("順風段", tail_period, tail_ret, tail_spy),
-        _segment_performance("逆風段", head_period, head_ret, head_spy),
+        _segment_performance("Tailwind", tail_period, tail_ret, tail_spy),
+        _segment_performance("Headwind", head_period, head_ret, head_spy),
     ]
     return {
         "episodes": visible,
@@ -893,7 +893,7 @@ def run_regime_split_backtest(
 
 def _interpret_regime(regime: dict[str, Any]) -> str:
     """
-    Decide whether 逆風段 lagged SPY, or whether its Sharpe turned negative.
+    Decide whether Headwind lagged SPY, or whether its Sharpe turned negative.
 
     Args:
         regime: Return value of run_regime_split_backtest.
@@ -902,8 +902,8 @@ def _interpret_regime(regime: dict[str, Any]) -> str:
         A conclusion that can be printed as-is.
     """
     by_name = {row["name"]: row for row in regime["segments"]}
-    head = by_name["逆風段"]
-    tail = by_name["順風段"]
+    head = by_name["Headwind"]
+    tail = by_name["Tailwind"]
     full_net = float(regime["full_net"])
     if not regime["episodes"] or head["n_days"] == 0:
         return (
@@ -918,29 +918,29 @@ def _interpret_regime(regime: dict[str, Any]) -> str:
         reasons: list[str] = []
         if loses:
             reasons.append(
-                f"逆風段 strategy return {_pct(head['strategy_return'])}, "
+                f"Headwind strategy return {_pct(head['strategy_return'])}, "
                 f"SPY over the same days {_pct(head['spy_return'])}, excess {_pct(head['excess'])}"
             )
         if sharpe_negative:
-            reasons.append(f"逆風段 Sharpe {_num(head['sharpe'])} turned negative")
+            reasons.append(f"Headwind Sharpe {_num(head['sharpe'])} turned negative")
         return (
             f"Group A full-window after-cost cumulative return is {_pct(full_net)}, "
-            f"of which 順風段 strategy return is {_pct(tail['strategy_return'])}"
+            f"of which Tailwind strategy return is {_pct(tail['strategy_return'])}"
             f" (Sharpe {_num(tail['sharpe'])}). "
             + ". ".join(reasons)
-            + ". This total is driven mainly by 順風段, so reliability in a headwind is in question."
+            + ". This total is driven mainly by Tailwind, so reliability in a headwind is in question."
         )
     return (
-        f"逆風段 strategy return {_pct(head['strategy_return'])}, "
+        f"Headwind strategy return {_pct(head['strategy_return'])}, "
         f"SPY over the same days {_pct(head['spy_return'])}, excess {_pct(head['excess'])}, "
         f"Sharpe {_num(head['sharpe'])}. "
-        f"順風段 strategy return {_pct(tail['strategy_return'])}, Sharpe {_num(tail['sharpe'])}. "
-        "逆風段 did not lag SPY over the same days, and Sharpe did not turn negative."
+        f"Tailwind strategy return {_pct(tail['strategy_return'])}, Sharpe {_num(tail['sharpe'])}. "
+        "Headwind did not lag SPY over the same days, and Sharpe did not turn negative."
     )
 
 
 def _print_regime(regime: dict[str, Any]) -> None:
-    """Print the 順風段 and 逆風段 comparison table."""
+    """Print the Tailwind and Headwind comparison table."""
     print(f"\n=== Group A regime split ({regime['window']}, after costs) ===", flush=True)
     print(
         "Drawdown definition: before the close retakes a high, the lowest point falls more than "
@@ -1084,15 +1084,15 @@ def _print_table(results: dict[str, dict[str, Any]]) -> None:
 
 
 def _assert_realtime_regime_rules() -> None:
-    """Check a hand-computed price path: 逆風 starts only after an 8% break, and clears only on a new high."""
+    """Check a hand-computed price path: Headwind starts only after an 8% break, and clears only on a new high."""
     index = pd.bdate_range("2024-01-02", periods=7)
     prices = pd.Series([100.0, 100.0, 95.0, 91.0, 95.0, 100.0, 92.0], index=index)
     labels = realtime_regime(prices).tolist()
-    expected = ["順風", "順風", "順風", "逆風", "逆風", "順風", "逆風"]
+    expected = ["Tailwind", "Tailwind", "Tailwind", "Headwind", "Headwind", "Tailwind", "Headwind"]
     if labels != expected:
         raise AssertionError(f"Realtime regime does not match the hand calculation: {labels}")
     still_under = realtime_regime(prices.iloc[:5])
-    if str(still_under.iloc[-1]) != "逆風":
+    if str(still_under.iloc[-1]) != "Headwind":
         raise AssertionError("The label cleared once price was within 5% of the high, which breaks the rule")
 
 
@@ -1117,7 +1117,7 @@ def run_realtime_defense_compare(
     Compare Group A's fixed monthly rule with the realtime headwind defense.
 
     The baseline still picks the top 3 at each month-end. The defensive book holds SPY
-    for a month when the rebalance close is already labeled 逆風. Costs still follow weight changes.
+    for a month when the rebalance close is already labeled Headwind. Costs still follow weight changes.
     If the truncation check fails, the defensive book is not run, so a label that can see the future is not treated as a tradable rule.
 
     Args:
@@ -1164,7 +1164,7 @@ def _print_defended_month_gaps(baseline: dict[str, Any], defense: dict[str, Any]
 
     Args:
         baseline: Full stock-picking backtest. It must include months and gross_returns.
-        defense: Backtest that holds SPY in 逆風 months. It decides which months are listed.
+        defense: Backtest that holds SPY in Headwind months. It decides which months are listed.
     """
     stock_by_signal = {month["signal"]: month for month in baseline.get("months", [])}
     gross = baseline.get("gross_returns")
@@ -1228,7 +1228,7 @@ def _print_realtime_defense(comparison: dict[str, Any]) -> None:
     print("-" * len(header), flush=True)
     rows = (
         ("Baseline (keep picking)", base),
-        ("Defense (hold SPY in 逆風)", defense),
+        ("Defense (hold SPY in Headwind)", defense),
     )
     for title, row in rows:
         print(
@@ -1241,11 +1241,11 @@ def _print_realtime_defense(comparison: dict[str, Any]) -> None:
         )
     dates = defense.get("headwind_signal_dates") or []
     print(
-        f"逆風 months: {defense['n_headwind_signals']} (the month-end rebalance day was already down 8%)",
+        f"Headwind months: {defense['n_headwind_signals']} (the month-end rebalance day was already down 8%)",
         flush=True,
     )
     if dates:
-        print("  逆風 rebalance days: " + ", ".join(str(item) for item in dates), flush=True)
+        print("  Headwind rebalance days: " + ", ".join(str(item) for item in dates), flush=True)
     print(
         f"Defensive book actually held SPY: {defense['n_defended_months']} months",
         flush=True,

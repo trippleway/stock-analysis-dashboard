@@ -335,7 +335,7 @@ def _cohort_returns(
     Args:
         trades: Finished simulated trades. Each needs regime, allocated, and shares.
         close: Close panel.
-        regime: 順風段 or 逆風段.
+        regime: Tailwind or Headwind.
 
     Returns:
         Daily returns on the days this regime had capital invested.
@@ -410,7 +410,7 @@ def _regime_stats(
         trades: All trades.
         close: Close panel.
         spy_ret: SPY daily returns aligned to close.
-        regime: 順風段 or 逆風段.
+        regime: Tailwind or Headwind.
 
     Returns:
         Dict with n_trades, strategy_return, spy_return, excess, sharpe, and n_days.
@@ -902,7 +902,7 @@ def run_event_driven_backtest(
                         "shares": each * (1.0 - _ONE_WAY_COST) / float(px),
                         "allocated": each,
                         "last_price": float(px),
-                        "regime": "逆風段" if day in headwind else "順風段",
+                        "regime": "Headwind" if day in headwind else "Tailwind",
                     }
                     cash -= each
                     if ticker in exited_today:
@@ -941,7 +941,7 @@ def run_event_driven_backtest(
         name: _regime_stats(trades, close.loc[daily.index[0] : daily.index[-1]], spy_ret, name)
         if len(daily)
         else _regime_stats(trades, close, spy_ret, name)
-        for name in ("順風段", "逆風段")
+        for name in ("Tailwind", "Headwind")
     }
     holds = [int(trade["holding_days"]) for trade in trades]
     reasons: dict[str, int] = {key: 0 for key in _EXIT_LABELS}
@@ -1135,8 +1135,8 @@ def _verdict(monthly_head: dict[str, Any], event_head: dict[str, Any], event: di
     Compare headwind Sharpe for the event-driven run and the fixed monthly run.
 
     Args:
-        monthly_head: The monthly run's headwind segment. The stored name is 逆風段.
-        event_head: Event-driven trades whose entry day falls in 逆風段.
+        monthly_head: The monthly run's headwind segment. The stored name is Headwind.
+        event_head: Event-driven trades whose entry day falls in Headwind.
         event: Full event-driven result, so the conclusion also reports total return.
 
     Returns:
@@ -1145,7 +1145,7 @@ def _verdict(monthly_head: dict[str, Any], event_head: dict[str, Any], event: di
     base = float(monthly_head["sharpe"])
     new = float(event_head["sharpe"])
     total = _pct(float(event["cumulative_return_net"]))
-    tail = event["regime"]["順風段"]
+    tail = event["regime"]["Tailwind"]
     shared = (
         f"Event-driven return after costs is {total}, Sharpe {_num(float(event['sharpe']))}. "
         f"Tailwind return {_pct(float(tail['strategy_return']))}, Sharpe {_num(float(tail['sharpe']))}. "
@@ -1181,9 +1181,9 @@ def _print_report(
     event: dict[str, Any],
 ) -> None:
     """Print the monthly-versus-event comparison, the regime table, and annualized fills."""
-    monthly_tail = _segment(monthly_regime, "順風段")
-    monthly_head = _segment(monthly_regime, "逆風段")
-    event_head = event["regime"]["逆風段"]
+    monthly_tail = _segment(monthly_regime, "Tailwind")
+    monthly_head = _segment(monthly_regime, "Headwind")
+    event_head = event["regime"]["Headwind"]
     holds = (
         f"{event['avg_holding_days']:.1f} days"
         f" (min {event['holding_min']} / median {event['holding_median']:.0f} / max {event['holding_max']})"
@@ -1231,7 +1231,7 @@ def _print_report(
     print("              | Fixed monthly | Event-driven", flush=True)
     print(
         f"Tailwind Sharpe | {_num(float(monthly_tail['sharpe']))} | "
-        f"{_num(float(event['regime']['順風段']['sharpe']))}",
+        f"{_num(float(event['regime']['Tailwind']['sharpe']))}",
         flush=True,
     )
     print(
@@ -1252,8 +1252,8 @@ def _print_report(
     print(
         f"Event-driven headwind: {event_head['n_trades']} entries, "
         f"{event_head['n_days']} invested days; "
-        f"tailwind: {event['regime']['順風段']['n_trades']} entries, "
-        f"{event['regime']['順風段']['n_days']} days.",
+        f"tailwind: {event['regime']['Tailwind']['n_trades']} entries, "
+        f"{event['regime']['Tailwind']['n_days']} days.",
         flush=True,
     )
     print(_verdict(monthly_head, event_head, event), flush=True)
@@ -1323,8 +1323,8 @@ def _sensitivity_row(case: dict[str, Any], result: dict[str, Any]) -> dict[str, 
     Returns:
         Annualized one-way fills, tailwind and headwind Sharpe, headwind return, and total return after costs.
     """
-    tail = result["regime"]["順風段"]
-    head = result["regime"]["逆風段"]
+    tail = result["regime"]["Tailwind"]
+    head = result["regime"]["Headwind"]
     stops = [
         float(trade["return_pct"])
         for trade in result["trades"]
@@ -1878,8 +1878,8 @@ def _print_fetch_estimate(estimate: dict[str, Any]) -> None:
 
 def _print_ten_year_baseline(result: dict[str, Any]) -> None:
     """Print trade count, regime Sharpe, and the number of SPY drawdowns for the 10-year baseline."""
-    head = result["regime"]["逆風段"]
-    tail = result["regime"]["順風段"]
+    head = result["regime"]["Headwind"]
+    tail = result["regime"]["Tailwind"]
     episodes = result.get("drawdown_episodes") or []
     print("\n=== 10-year baseline (point-in-time S&P 500, after costs) ===", flush=True)
     print(
