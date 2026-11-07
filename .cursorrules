@@ -3,68 +3,80 @@
 # ============================================================
 
 ## Project Vision
-這是一個美股 AI 產業分析系統，追蹤 AI 商業化的六層價值鏈，
-每日產生 Top 3 投資標的推薦，並追蹤實際績效驗證策略有效性。
-最終目標是作為求職履歷的核心 Project，展現產業判斷力與量化分析能力。
+A US-equity AI-sector analysis system that tracks a six-layer AI
+commercialisation value chain, produces a daily Top 3 ranking, and logs
+realised performance so the strategy can be validated rather than assumed.
 
 ## Environment
 - Python 3.13, macOS with Anaconda
-- `python` 指向 Anaconda（有所有套件），不要使用 `python3`
-- Shebang / subprocess / 說明文件都用 `python`
-- 已安裝：yfinance, pandas, numpy, streamlit, plotly, prophet, ta,
+- `python` points at Anaconda (all packages installed). Never use `python3`.
+- Use `python` in shebangs, subprocess calls, and documentation.
+- Installed: yfinance, pandas, numpy, streamlit, plotly, prophet, ta,
   anthropic, transformers, torch, tqdm, python-dotenv, pyarrow, requests
 
 ## Project Structure
-- src/                         核心模組
-  - config.py                  設定（60 支股票、權重、參數）
-  - data_collector.py          yfinance 數據收集器
-  - indicators.py              技術指標計算與評分
-  - fundamentals.py            基本面分析
-  - valuation.py               估值模型
-  - predictor.py               Prophet 30 天預測
-  - news_fetcher.py            新聞抓取
-  - sentiment.py               FinBERT 情緒分析 + Claude 摘要
-  - profile_fetcher.py         公司簡介
-  - daily_picker.py            每日選股（整合所有分析）
-  - track_record.py            策略績效追蹤
+- config.py                      Universe, weights, fixed backtest window
+- src/                           Core modules
+  - data_collector.py            yfinance ingestion with caching and retries
+  - indicators.py                Technical indicators and sub-scores
+  - fundamentals.py              Fundamental scoring
+  - valuation.py                 Valuation models
+  - predictor.py                 Prophet 30-day forecast
+  - news_fetcher.py              News retrieval
+  - sentiment.py                 FinBERT sentiment + Claude summaries
+  - profile_fetcher.py           Company profiles
+  - entry_price.py               Entry-level calculation
+  - daily_picker.py              Composite scoring and daily selection
+  - track_record.py              Recommendation logging and return backfill
+  - backtest_*.py                Backtest data, universes, and engines
+  - factor_research*.py          Factor IC research
 - dashboard/
-  - app.py                     Streamlit UI
+  - app.py                       Streamlit UI
 - data/
-  - cache/YYYY-MM-DD/          當日快取
-  - daily_picks/YYYY-MM-DD.json  每日選股結果
-  - track_record/              績效追蹤資料
+  - cache/YYYY-MM-DD/            Daily cache
+  - daily_picks/YYYY-MM-DD.json  Daily selection output
+  - track_record/                Performance tracking data
+
+## Language
+- English for everything: code, comments, docstrings, log messages, UI text,
+  and commit messages. No exceptions — this repository is public.
 
 ## Code Style Conventions
-- 所有函數必須有中文 docstring 說明用途、參數、回傳值
-- 複雜邏輯要加行內中文註解
-- 錯誤處理用 try/except 保護，失敗時 log warning 但不中斷主流程
-- 所有 module 底部要有 if __name__ == '__main__': 測試區塊
-- 使用 Python logging 模組（不要用 print 做正式 log）
-- 型別註記用 Python 3.10+ 新語法（例如 str | None）
+- Every function needs an English docstring covering purpose, parameters,
+  and return value.
+- Add inline English comments for non-obvious logic.
+- Guard external calls with try/except; log a warning on failure without
+  aborting the main flow.
+- Every module ends with an `if __name__ == '__main__':` test block.
+- Use the `logging` module, not `print`, for real logging.
+- Use Python 3.10+ type syntax (e.g. `str | None`).
 
-## API 與網路使用
-- yfinance 每次呼叫間 sleep 0.5-1 秒避免 429 錯誤
-- 使用當日本地快取（CACHE_DIR / YYYY-MM-DD / *.parquet 或 *.json）
-- ANTHROPIC_API_KEY 從 config.py 讀取（透過 .env）
-- 呼叫 Claude 用 model="claude-haiku-4-5-20251001"（便宜且快）
-- 網路請求失敗要有 retry 機制（3 次，遞增 delay）
+## API and network usage
+- Sleep 0.5-1s between yfinance calls to avoid 429 errors.
+- Use the local daily cache (CACHE_DIR / YYYY-MM-DD / *.parquet or *.json).
+- Read ANTHROPIC_API_KEY from config.py (loaded from .env).
+- Call Claude with model="claude-haiku-4-5-20251001" (cheap and fast).
+- Retry failed network requests 3 times with increasing delay.
 
-## Stock Universe (60 支股票，六層 AI 價值鏈)
-Layer 1 Infrastructure (15): AI 晶片、記憶體、伺服器
+## Stock universe (60 tickers, six-layer AI value chain)
+Layer 1 Infrastructure (15): AI chips, memory, servers
   NVDA, AMD, AVGO, MRVL, ARM, MU, WDC, TSM, ASML, AMAT,
   LRCX, KLAC, SMCI, DELL, VRT
-Layer 2 Cloud (8): 超大規模雲、AI 雲
+Layer 2 Cloud & compute (8): hyperscale and AI-specialised cloud
   MSFT, GOOGL, AMZN, ORCL, IBM, CRWV, NET, AKAM
-Layer 3 Foundation Models (5): 基礎模型概念股
+Layer 3 Foundation models (5): foundation-model exposure
   META, BIDU, TSLA, AAPL, PLTR
-Layer 4 Data Platforms (10): 資料倉儲、向量資料庫、AI 平台
+Layer 4 Data platforms (10): warehouses, vector databases, AI platforms
   SNOW, DDOG, MDB, ESTC, AI, S, PATH, GTLB, CFLT, SOUN
-Layer 5 Applications (12): AI SaaS、生產力工具
+Layer 5 AI applications (12): AI SaaS and productivity tools
   CRM, NOW, ADBE, INTU, WDAY, TEAM, HUBS, SHOP, TTD, APP, U, ZM
-Layer 6 Consumer & Content (10): AI 消費、娛樂內容
+Layer 6 Consumer & content (10): consumer AI, entertainment, media
   SPOT, NFLX, RBLX, DUOL, DIS, WBD, SONY, PINS, SNAP, RDDT
 
-## Score Weights (in config.SCORE_WEIGHTS)
+These English layer names are published in README.md. Keep them identical
+everywhere — config.py, the dashboard, and the docs.
+
+## Score weights (in config.SCORE_WEIGHTS)
 - Technical: 0.25
 - Fundamental: 0.25
 - Valuation: 0.20
@@ -72,29 +84,44 @@ Layer 6 Consumer & Content (10): AI 消費、娛樂內容
 - Volume: 0.10
 - News: 0.10
 
-## Filter Thresholds (in config.FILTER_THRESHOLDS)
+## Filter thresholds (in config.FILTER_THRESHOLDS)
 - min_tech_score: 50
 - min_fund_score: 40
 - min_pred_return: 0.0
 - min_volume_ratio: 0.5
 
-## Development Roadmap
-- ✅ Stage 0: 基礎系統（已完成）
-- 🔄 Stage 1: Track Record 記錄機制（目前進行中）
-- ⬜ Stage 2: 五因子模型（Value / Momentum / Quality / Sentiment / Growth）
-- ⬜ Stage 3: AI 產業維度層（CapEx / Monetization / Regulation / Capital Flow）
-- ⬜ Stage 4: 完整回測系統（vectorbt）
+## Current status
+- Dashboard, scoring pipeline, and track-record logging are complete.
+- Backtesting and validation are complete. The headline result (209.9% over
+  36 months vs 85.0% for SPY) does not survive its controls: equal-weighting
+  the same universe returns 225.7%, the strategy sits at the 65th percentile
+  of 1,000 random draws, and rank IC is 0.055 with t = 1.25. On a
+  point-in-time S&P 500 cross-section (~486 names/month), no factor reaches
+  |t| = 1.5. The conclusion is a null result: the excess return comes from
+  sector exposure, not stock selection. See README.md.
+- Current work: finding a signal that survives the point-in-time test.
 
-## Design Principles
-1. 不為技術而技術，每個功能都要能講出面試故事
-2. 保留現有模組，只做增量開發（不重寫既有 code）
-3. 每個階段都要有可量化的績效指標
-4. 使用者是繁體中文使用者，所有 UI 文字、註解、log 訊息用繁體中文
-5. 面向履歷與面試的商業敘事，避免純技術實作導向
+## Research discipline
+These constraints are not optional. The project's main finding came from
+enforcing them against its own strategy.
+1. No look-ahead bias. Any factor must pass a truncation check: the value
+   computed from data truncated at month t must equal the value computed
+   from the full series at month t.
+2. No performance claim without controls. A backtest result means nothing
+   until it is compared against equal-weight, random-selection, and rank-IC
+   benchmarks on the same universe and window.
+3. Report null and negative results as prominently as positive ones,
+   including in README.md.
+4. Backtest windows, universes, and cost assumptions are fixed constants in
+   config.py, never derived from the run date.
+5. Treat a result that only holds on a small cross-section as unproven until
+   it is re-tested on a point-in-time universe.
+6. Preserve existing modules; prefer incremental development over rewrites.
 
-## When Generating Code
-- 直接產生完整可執行的檔案，不要留 TODO 或 placeholder
-- 引用現有模組時使用 from src.xxx import yyy（如果從專案根目錄執行）
-- 或用相對匯入處理 sys.path
-- 檔案開頭要有 # -*- coding: utf-8 -*- 與模組級 docstring
-- 執行方式範例：底部 docstring 寫 `python src/xxx.py`（不是 python3）
+## When generating code
+- Produce complete, runnable files. No TODOs or placeholders.
+- Import project modules as `from src.xxx import yyy` when running from the
+  project root, or handle sys.path with relative imports.
+- Start each file with `# -*- coding: utf-8 -*-` and a module-level docstring.
+- Document the run command as `python src/xxx.py` (not python3).
+- Do not commit. Leave review and commits to the user.
