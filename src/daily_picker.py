@@ -92,14 +92,14 @@ def _build_pick_reasons(
     """Build pick reasons from fundamentals, technicals, news, and entry price. At most about six."""
     reasons: list[str] = []
 
-    if fundamental.get("signals", {}).get("growth") == "高速成長":
+    if fundamental.get("signals", {}).get("growth") == "High Growth":
         reasons.append("Revenue and earnings are both growing quickly")
     if valuation.get("valuation_signal") == "undervalued":
         up = _to_float_or_none(valuation.get("upside_pct")) or 0.0
         reasons.append(f"Valuation looks cheap, upside +{up:.1f}%")
-    if technical.get("signals", {}).get("macd") == "金叉":
+    if technical.get("signals", {}).get("macd") == "Golden Cross":
         reasons.append("MACD golden cross")
-    if technical.get("signals", {}).get("ma_trend") == "多頭排列":
+    if technical.get("signals", {}).get("ma_trend") == "Bullish Alignment":
         reasons.append("Moving averages are stacked bullishly")
     if (_to_float_or_none(prediction.get("expected_return_pct")) or 0.0) > 10:
         x = _to_float_or_none(prediction.get("expected_return_pct")) or 0.0
@@ -108,9 +108,9 @@ def _build_pick_reasons(
         reasons.append("Profitability is strong")
     if sector in ("semiconductor", "ai_software"):
         reasons.append("In a favored AI or semiconductor group")
-    if news.get("sentiment_label") == "強烈看漲":
+    if news.get("sentiment_label") == "Strongly Bullish":
         reasons.append("Recent news is strongly positive")
-    if news.get("sentiment_label") == "偏多" and int(news.get("positive_count", 0) or 0) >= 3:
+    if news.get("sentiment_label") == "Bullish" and int(news.get("positive_count", 0) or 0) >= 3:
         reasons.append("Several recent articles are positive")
     if (_to_float_or_none(news.get("sentiment_score")) or 0.0) > 0.3 and int(news.get("news_count", 0) or 0) >= 3:
         reasons.append(f"News sentiment is positive ({int(news.get('positive_count', 0) or 0)} positive articles)")
@@ -143,20 +143,20 @@ def _build_risk_factors(
     """Build at most three risk notes from the same rules."""
     risks: list[str] = []
 
-    if technical.get("signals", {}).get("rsi") == "超買":
+    if technical.get("signals", {}).get("rsi") == "Overbought":
         risks.append("RSI is overbought; a short-term pullback is a risk")
     if valuation.get("valuation_signal") == "overvalued":
         up = _to_float_or_none(valuation.get("upside_pct")) or 0.0
         risks.append(f"Valuation looks rich by {abs(up):.1f}%")
-    if fundamental.get("signals", {}).get("financial_health") in ("需注意", "風險"):
+    if fundamental.get("signals", {}).get("financial_health") in ("Caution", "Risk"):
         risks.append("Financial leverage is high")
     if prediction.get("confidence") == "low":
         risks.append("The forecast is uncertain")
-    if technical.get("signals", {}).get("macd") == "死叉":
+    if technical.get("signals", {}).get("macd") == "Death Cross":
         risks.append("MACD death cross")
-    if news.get("sentiment_label") == "強烈看空":
+    if news.get("sentiment_label") == "Strongly Bearish":
         risks.append("Recent news is clearly negative")
-    if news.get("sentiment_label") == "偏空" and int(news.get("negative_count", 0) or 0) >= 2:
+    if news.get("sentiment_label") == "Bearish" and int(news.get("negative_count", 0) or 0) >= 2:
         risks.append("Several recent articles are negative")
     if int(news.get("news_count", 0) or 0) == 0:
         risks.append("No recent news to use as context")
@@ -389,7 +389,7 @@ def _print_top3_report(result: dict[str, Any]) -> None:
         )
         news = p.get("news", {}) or {}
         print(
-            f"   news: {news.get('sentiment_label', '無新聞')} "
+            f"   news: {news.get('sentiment_label', 'No News')} "
             f"({int(news.get('news_count', 0) or 0)} articles: "
             f"positive {int(news.get('positive_count', 0) or 0)} / "
             f"negative {int(news.get('negative_count', 0) or 0)})"

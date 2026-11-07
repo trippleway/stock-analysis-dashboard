@@ -114,14 +114,14 @@ def _label_cn(label: str) -> str:
 def _sentiment_label(score: float) -> str:
     """Map the aggregate sentiment score to the overall label."""
     if score > 0.5:
-        return "強烈看漲"
+        return "Strongly Bullish"
     if score > 0.2:
-        return "偏多"
+        return "Bullish"
     if score >= -0.2:
-        return "中性"
+        return "Neutral"
     if score >= -0.5:
-        return "偏空"
-    return "強烈看空"
+        return "Bearish"
+    return "Strongly Bearish"
 
 
 def generate_news_summary(sentiment_result: dict[str, Any], ticker: str) -> str:
@@ -133,7 +133,7 @@ def generate_news_summary(sentiment_result: dict[str, Any], ticker: str) -> str:
     if int(sentiment_result.get("news_count", 0) or 0) == 0:
         return "No recent news. Use fundamentals and technicals as the main inputs."
 
-    label = str(sentiment_result.get("sentiment_label", "中性"))
+    label = str(sentiment_result.get("sentiment_label", "Neutral"))
     score = float(sentiment_result.get("sentiment_score", 0) or 0)
     pos = int(sentiment_result.get("positive_count", 0) or 0)
     neu = int(sentiment_result.get("neutral_count", 0) or 0)
@@ -227,7 +227,7 @@ About 150-250 words, with blank lines between paragraphs."""
     name_part = f" ({company_name})" if company_name else ""
     user_message = f"""Stock: {sym}{name_part}
 
-Overall sentiment score: {float(sentiment_result.get('sentiment_score', 0) or 0):+.2f} ({sentiment_result.get('sentiment_label', '中性')})
+Overall sentiment score: {float(sentiment_result.get('sentiment_score', 0) or 0):+.2f} ({sentiment_result.get('sentiment_label', 'Neutral')})
 Article counts: positive {int(sentiment_result.get('positive_count', 0) or 0)} / neutral {int(sentiment_result.get('neutral_count', 0) or 0)} / negative {int(sentiment_result.get('negative_count', 0) or 0)}
 
 Articles, ordered by impact:
@@ -254,7 +254,7 @@ Write the news overview."""
 
     except Exception as e:  # noqa: BLE001
         _log.warning("%s LLM summary failed: %s", sym, e)
-        return "[離線摘要] " + generate_news_summary(sentiment_result, ticker)
+        return "[Offline summary] " + generate_news_summary(sentiment_result, ticker)
 
 
 def analyze_news_sentiment(news_items: list[dict[str, Any]]) -> dict[str, Any]:
@@ -264,7 +264,7 @@ def analyze_news_sentiment(news_items: list[dict[str, Any]]) -> dict[str, Any]:
     if not news_items:
         return {
             "sentiment_score": 0.0,
-            "sentiment_label": "中性",
+            "sentiment_label": "Neutral",
             "news_count": 0,
             "positive_count": 0,
             "neutral_count": 0,
@@ -361,7 +361,7 @@ def analyze_news_sentiment(news_items: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _empty_sentiment_result(ticker: str, label: str = "無新聞") -> dict[str, Any]:
+def _empty_sentiment_result(ticker: str, label: str = "No News") -> dict[str, Any]:
     """Default result when there is no news or the analysis fails."""
     return {
         "ticker": ticker.upper(),
@@ -401,7 +401,7 @@ def analyze_ticker_sentiment(ticker: str, max_items: int = 10) -> dict[str, Any]
 
     news = fetch_stock_news(sym, max_items=max_items, force_refresh=False)
     if not news:
-        result = _empty_sentiment_result(sym, label="無新聞")
+        result = _empty_sentiment_result(sym, label="No News")
         result["summary"] = generate_news_summary_with_llm(result, sym)
         with open(cache, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)

@@ -326,7 +326,7 @@ def _score_rsi(curr: float | None, prev: float | None) -> tuple[float, str]:
     # Signals cover overbought, oversold, neutral, and a bounce. Extremes are checked before the bounce.
     # The overbought signal token is compared in daily_picker and entry_price, so it stays.
     if curr > 70:
-        sig = "超買"
+        sig = "Overbought"
     elif curr < 30:
         sig = "Oversold"
     elif prev is not None and curr > prev and prev < 35:
@@ -387,9 +387,9 @@ def _score_macd(
     above_zero_hist = dif > 0 and hist_expand
 
     if gc:
-        sc, sig = 90.0, "金叉"
+        sc, sig = 90.0, "Golden Cross"
     elif dc:
-        sc, sig = 30.0, "死叉"
+        sc, sig = 30.0, "Death Cross"
     elif bull:
         sc, sig = 75.0, "Still bullish"
     elif above_zero_hist:
@@ -479,7 +479,7 @@ def _score_ma_trend(
     below_20_above_60 = close < ma20 and close > ma60
 
     if full_bull:
-        return 90.0, "多頭排列"
+        return 90.0, "Bullish Alignment"
     # Partial bullish stack: MA20>MA60>MA200 but not a full bullish stack. The signal is "Consolidating".
     if partial_bull:
         return 75.0, "Consolidating"

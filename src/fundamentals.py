@@ -73,7 +73,7 @@ def _score_growth(rev: float | None, ear: float | None) -> tuple[float, str]:
         return 50.0, "Low growth"
 
     if rev > 0.30 and ear > 0.30:
-        return 95.0, "高速成長"
+        return 95.0, "High Growth"
     if rev > 0.15 and ear > 0.15:
         return 85.0, "Steady growth"
     if rev > 0.05 and ear > 0.05:
@@ -225,9 +225,9 @@ def _score_financial_health(dte_raw: float | None, cr: float | None) -> tuple[fl
     elif total >= 60:
         sig = "Acceptable"
     elif total >= 40:
-        sig = "需注意"
+        sig = "Caution"
     else:
-        sig = "風險"
+        sig = "Risk"
     return total, sig
 
 

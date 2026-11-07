@@ -197,7 +197,7 @@ def calculate_entry_prices(stock_data: dict[str, Any]) -> dict[str, Any]:
         else:
             current_zone = "far_above"
 
-        rsi_overbought = rsi_signal == "超買"
+        rsi_overbought = rsi_signal == "Overbought"
         overvalued = valuation_signal == "overvalued"
         avoid_price = current > aggressive * 1.05
         avoid_val = overvalued and rsi_overbought

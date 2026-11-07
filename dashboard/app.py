@@ -248,12 +248,12 @@ def pct_color(v: float | None) -> str:
 def get_sentiment_color(label: str) -> str:
     """Color for a news-sentiment label."""
     return {
-        "強烈看漲": "#00C853",
-        "偏多": "#66BB6A",
-        "中性": "#9E9E9E",
-        "偏空": "#EF5350",
-        "強烈看空": "#D32F2F",
-        "無新聞": "#616161",
+        "Strongly Bullish": "#00C853",
+        "Bullish": "#66BB6A",
+        "Neutral": "#9E9E9E",
+        "Bearish": "#EF5350",
+        "Strongly Bearish": "#D32F2F",
+        "No News": "#616161",
     }.get(label, "#9E9E9E")
 
 
@@ -382,7 +382,7 @@ def render_daily_page(daily: dict[str, Any]) -> None:
             st.progress(min(max(int(float(p.get("composite_score", 0))), 0), 100), text=f"Composite {p.get('composite_score')}")
 
             news = p.get("news", {}) if isinstance(p.get("news"), dict) else {}
-            sent_label = str(news.get("sentiment_label", "無新聞"))
+            sent_label = str(news.get("sentiment_label", "No News"))
             news_count = int(news.get("news_count", 0) or 0)
             sent_color = get_sentiment_color(sent_label)
             st.markdown(
@@ -858,7 +858,7 @@ def render_deep_page(daily: dict[str, Any]) -> None:
 
     with tab4:
         news = pick_news or {}
-        sentiment_label = str(news.get("sentiment_label", "無新聞"))
+        sentiment_label = str(news.get("sentiment_label", "No News"))
         sentiment_score = float(news.get("sentiment_score", 0) or 0)
         news_count = int(news.get("news_count", 0) or 0)
         pos = int(news.get("positive_count", 0) or 0)
@@ -909,9 +909,9 @@ def render_deep_page(daily: dict[str, Any]) -> None:
 
         if not summary:
             st.caption("No summary yet")
-        elif summary.startswith("[離線摘要]"):
+        elif summary.startswith("[Offline summary]"):
             st.caption("⚠️ Claude API unavailable; showing the template summary")
-            st.info(summary.replace("[離線摘要] ", "", 1))
+            st.info(summary.replace("[Offline summary] ", "", 1))
         else:
             summary_safe = html.escape(summary, quote=True)
             st.markdown(
