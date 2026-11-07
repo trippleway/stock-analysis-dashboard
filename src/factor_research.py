@@ -636,28 +636,28 @@ def _print_ic_table(ic: pd.DataFrame) -> pd.DataFrame:
         rows.append(
             {
                 "key": key,
-                "因子": label,
-                "平均 IC": float(stats["mean"]),
-                "IC 標準差": float(stats["std"]),
-                "t 統計量": t_value,
+                "Factor": label,
+                "Mean IC": float(stats["mean"]),
+                "IC Std Dev": float(stats["std"]),
+                "t-stat": t_value,
                 "abs_t": abs(t_value) if math.isfinite(t_value) else -1.0,
-                "IC>0 月份比例": _fmt_ratio(
+                "% Months IC>0": _fmt_ratio(
                     float(stats["positive_ratio"]),
                     int(stats["n_positive"]),
                     int(stats["n"]),
                 ),
-                "有效月數": int(stats["n"]),
+                "Valid Months": int(stats["n"]),
             }
         )
-    rows.sort(key=lambda row: (-float(row["abs_t"]), str(row["因子"])))
+    rows.sort(key=lambda row: (-float(row["abs_t"]), str(row["Factor"])))
     display = pd.DataFrame(
         {
-            "因子": [row["因子"] for row in rows],
-            "平均 IC": [_fmt_num(row["平均 IC"], 3) for row in rows],
-            "IC 標準差": [_fmt_num(row["IC 標準差"], 3) for row in rows],
-            "t 統計量": [_fmt_num(row["t 統計量"], 2) for row in rows],
-            "IC>0 月份比例": [row["IC>0 月份比例"] for row in rows],
-            "有效月數": [row["有效月數"] for row in rows],
+            "Factor": [row["Factor"] for row in rows],
+            "Mean IC": [_fmt_num(row["Mean IC"], 3) for row in rows],
+            "IC Std Dev": [_fmt_num(row["IC Std Dev"], 3) for row in rows],
+            "t-stat": [_fmt_num(row["t-stat"], 2) for row in rows],
+            "% Months IC>0": [row["% Months IC>0"] for row in rows],
+            "Valid Months": [row["Valid Months"] for row in rows],
         }
     )
     print("\n=== Monthly rank IC (Spearman, sorted by |t|) ===", flush=True)
@@ -787,7 +787,7 @@ def _composite_schemes() -> list[dict[str, Any]]:
 
     Returns:
         One row per scheme, with the name, the weights, and how those weights were built.
-        The looked-up names stay 現況, 移除 RSI, and RSI 反向.
+        The looked-up names stay Baseline, Drop RSI, and Invert RSI.
     """
     base = _base_tech_weights()
     flipped = dict(base)
@@ -796,13 +796,13 @@ def _composite_schemes() -> list[dict[str, Any]]:
     trend_only["bollinger"] = 0.5
     trend_only["ma_trend"] = 0.5
     return [
-        {"name": "現況", "weights": base, "note": "config.TECH_SCORE_WEIGHTS"},
+        {"name": "Baseline", "weights": base, "note": "config.TECH_SCORE_WEIGHTS"},
         {
-            "name": "移除 RSI",
+            "name": "Drop RSI",
             "weights": _renormalize(base, ("macd", "bollinger", "ma_trend", "volume")),
             "note": "the other four renormalized to their original shares",
         },
-        {"name": "RSI 反向", "weights": flipped, "note": "RSI weight flipped negative, the rest unchanged"},
+        {"name": "Invert RSI", "weights": flipped, "note": "RSI weight flipped negative, the rest unchanged"},
         {
             "name": "Drop RSI and MACD",
             "weights": _renormalize(base, ("bollinger", "ma_trend", "volume")),
@@ -900,31 +900,31 @@ def _composite_monthly_ic(
 
 def _hypothesis_sentence(rows: list[dict[str, Any]]) -> str:
     """
-    Describe whether this comparison supports the hypothesis, using the direction of mean IC versus 現況.
+    Describe whether this comparison supports the hypothesis, using the direction of mean IC versus Baseline.
 
     The hypothesis is that RSI, with its current sign, is dragging the composite down.
-    Support means dropping RSI, and flipping the RSI weight negative, both raise mean IC above 現況.
+    Support means dropping RSI, and flipping the RSI weight negative, both raise mean IC above Baseline.
     Only the direction is described.
 
     Args:
-        rows: Statistics for the five schemes. The first row must be 現況.
+        rows: Statistics for the five schemes. The first row must be Baseline.
 
     Returns:
         One sentence.
     """
     current = float(rows[0]["mean"])
     by_name = {str(row["name"]): row for row in rows}
-    drop = by_name["移除 RSI"]
-    flip = by_name["RSI 反向"]
+    drop = by_name["Drop RSI"]
+    flip = by_name["Invert RSI"]
     drop_higher = float(drop["mean"]) > current
     flip_higher = float(flip["mean"]) > current
     if drop_higher and flip_higher:
-        return "Dropping RSI, and flipping the RSI weight negative, both raise mean IC above 現況. The direction matches the idea that the current RSI subscore is dragging the composite down."
+        return "Dropping RSI, and flipping the RSI weight negative, both raise mean IC above Baseline. The direction matches the idea that the current RSI subscore is dragging the composite down."
     if not drop_higher and not flip_higher:
-        return "Dropping RSI, and flipping the RSI weight negative, both fail to raise mean IC above 現況. The direction does not match that hypothesis."
+        return "Dropping RSI, and flipping the RSI weight negative, both fail to raise mean IC above Baseline. The direction does not match that hypothesis."
     if drop_higher:
-        return "Dropping RSI raises mean IC above 現況, but flipping the RSI weight negative does not. The direction only partly matches the hypothesis."
-    return "Flipping the RSI weight negative raises mean IC above 現況, but dropping RSI does not. The direction only partly matches the hypothesis."
+        return "Dropping RSI raises mean IC above Baseline, but flipping the RSI weight negative does not. The direction only partly matches the hypothesis."
+    return "Flipping the RSI weight negative raises mean IC above Baseline, but dropping RSI does not. The direction only partly matches the hypothesis."
 
 
 def _print_composite_comparison(
@@ -945,7 +945,7 @@ def _print_composite_comparison(
     schemes = _composite_schemes()
     print("\n=== Composite-weight comparison (same subscores, rank IC only) ===", flush=True)
     print(
-        "The hypothesis is that the RSI subscore has the wrong sign and is dragging the composite down. The table shows the direction of the change versus 現況.",
+        "The hypothesis is that the RSI subscore has the wrong sign and is dragging the composite down. The table shows the direction of the change versus Baseline.",
         flush=True,
     )
     print(f"config.TECH_SCORE_WEIGHTS: {_fmt_weight_set(schemes[0]['weights'])}", flush=True)
@@ -961,16 +961,16 @@ def _print_composite_comparison(
     current_mean = float(rows[0]["mean"])
     display = pd.DataFrame(
         {
-            "方案": [row["name"] for row in rows],
-            "平均 IC": [_fmt_num(float(row["mean"]), 3) for row in rows],
-            "IC 標準差": [_fmt_num(float(row["std"]), 3) for row in rows],
-            "t 統計量": [_fmt_num(float(row["t"]), 2) for row in rows],
-            "IC>0 月份比例": [
+            "Variant": [row["name"] for row in rows],
+            "Mean IC": [_fmt_num(float(row["mean"]), 3) for row in rows],
+            "IC Std Dev": [_fmt_num(float(row["std"]), 3) for row in rows],
+            "t-stat": [_fmt_num(float(row["t"]), 2) for row in rows],
+            "% Months IC>0": [
                 _fmt_ratio(float(row["positive_ratio"]), int(row["n_positive"]), int(row["n"]))
                 for row in rows
             ],
-            "平均 IC − 現況": [
-                "—" if row["name"] == "現況" else _fmt_num(float(row["mean"]) - current_mean, 3)
+            "Mean IC − Baseline": [
+                "—" if row["name"] == "Baseline" else _fmt_num(float(row["mean"]) - current_mean, 3)
                 for row in rows
             ],
         }

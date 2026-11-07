@@ -463,31 +463,31 @@ def _print_pit_table(ic: pd.DataFrame, used_counts: dict[str, list[int]]) -> lis
         rows.append(
             {
                 "key": key,
-                "因子": label,
-                "平均 IC": float(stats["mean"]),
-                "IC 標準差": float(stats["std"]),
-                "t 統計量": t_value,
+                "Factor": label,
+                "Mean IC": float(stats["mean"]),
+                "IC Std Dev": float(stats["std"]),
+                "t-stat": t_value,
                 "abs_t": abs(t_value) if math.isfinite(t_value) else -1.0,
-                "IC>0 月份比例": _fmt_ratio(
+                "% Months IC>0": _fmt_ratio(
                     float(stats["positive_ratio"]),
                     int(stats["n_positive"]),
                     int(stats["n"]),
                 ),
-                "有效月數": int(stats["n"]),
-                "平均橫斷面檔數": average,
+                "Valid Months": int(stats["n"]),
+                "Mean Cross-Section Size": average,
             }
         )
-    rows.sort(key=lambda row: (-float(row["abs_t"]), str(row["因子"])))
+    rows.sort(key=lambda row: (-float(row["abs_t"]), str(row["Factor"])))
     display = pd.DataFrame(
         {
-            "因子": [row["因子"] for row in rows],
-            "平均 IC": [_fmt_num(float(row["平均 IC"]), 3) for row in rows],
-            "IC 標準差": [_fmt_num(float(row["IC 標準差"]), 3) for row in rows],
-            "t 統計量": [_fmt_num(float(row["t 統計量"]), 2) for row in rows],
-            "IC>0 月份比例": [row["IC>0 月份比例"] for row in rows],
-            "有效月數": [row["有效月數"] for row in rows],
-            "平均橫斷面檔數": [
-                _fmt_num(float(row["平均橫斷面檔數"]), 1) for row in rows
+            "Factor": [row["Factor"] for row in rows],
+            "Mean IC": [_fmt_num(float(row["Mean IC"]), 3) for row in rows],
+            "IC Std Dev": [_fmt_num(float(row["IC Std Dev"]), 3) for row in rows],
+            "t-stat": [_fmt_num(float(row["t-stat"]), 2) for row in rows],
+            "% Months IC>0": [row["% Months IC>0"] for row in rows],
+            "Valid Months": [row["Valid Months"] for row in rows],
+            "Mean Cross-Section Size": [
+                _fmt_num(float(row["Mean Cross-Section Size"]), 1) for row in rows
             ],
         }
     )
@@ -552,9 +552,9 @@ def _print_t_comparison(pit_rows: list[dict[str, Any]], group_a_t: dict[str, flo
     print(header, flush=True)
     for row in pit_rows:
         print(
-            f"{row['因子']:<16}"
+            f"{row['Factor']:<16}"
             f"{_fmt_num(group_a_t.get(str(row['key']), float('nan')), 2):>10}"
-            f"{_fmt_num(float(row['t 統計量']), 2):>10}",
+            f"{_fmt_num(float(row['t-stat']), 2):>10}",
             flush=True,
         )
 
