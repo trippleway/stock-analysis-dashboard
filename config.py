@@ -1,53 +1,53 @@
-# ── 60 支股票清單（按 AI 商業化六層次分類） ──
+# ── 60-name universe, grouped by the six layers of AI commercialization ──
 
-# Layer 1: AI Infrastructure（基礎設施）— 15 支
+# Layer 1 Infrastructure — 15 names
 AI_INFRASTRUCTURE = {
-    # GPU / AI 晶片
+    # GPU / AI chips
     "NVDA":  "NVIDIA",
     "AMD":   "AMD",
     "AVGO":  "Broadcom",
     "MRVL":  "Marvell",
     "ARM":   "Arm Holdings",
     
-    # 記憶體與儲存
+    # Memory and storage
     "MU":    "Micron",
     "WDC":   "Western Digital",
     
-    # 晶圓製造
+    # Wafer fabrication
     "TSM":   "TSMC",
     "ASML":  "ASML",
     "AMAT":  "Applied Materials",
     "LRCX":  "Lam Research",
     "KLAC":  "KLA Corporation",
     
-    # AI 伺服器與冷卻
+    # AI servers and cooling
     "SMCI":  "Super Micro Computer",
     "DELL":  "Dell Technologies",
-    "VRT":   "Vertiv (液冷)",
+    "VRT":   "Vertiv (liquid cooling)",
 }
 
-# Layer 2: Cloud & Compute（雲端運算）— 8 支
+# Layer 2 Cloud & compute — 8 names
 AI_CLOUD = {
     "MSFT":  "Microsoft (Azure)",
     "GOOGL": "Alphabet (GCP)",
     "AMZN":  "Amazon (AWS)",
     "ORCL":  "Oracle Cloud",
     "IBM":   "IBM",
-    "CRWV":  "CoreWeave (AI 雲)",
+    "CRWV":  "CoreWeave (AI cloud)",
     "NET":   "Cloudflare",
     "AKAM":  "Akamai",
 }
 
-# Layer 3: Foundation Models（基礎模型概念股）— 5 支
+# Layer 3 Foundation models — 5 names
 AI_FOUNDATION = {
     "META":  "Meta (Llama)",
-    "BIDU":  "百度 (文心)",
-    "TSLA":  "Tesla (自駕 AI)",
-    "AAPL":  "Apple (端側 AI)",
-    "PLTR":  "Palantir (國防 AI)",
+    "BIDU":  "Baidu (ERNIE)",
+    "TSLA":  "Tesla (autonomous-driving AI)",
+    "AAPL":  "Apple (on-device AI)",
+    "PLTR":  "Palantir (defense AI)",
 }
 
-# Layer 4: Data & AI Platforms（資料與 AI 平台）— 10 支
+# Layer 4 Data platforms — 10 names
 AI_DATA_PLATFORM = {
     "SNOW":  "Snowflake",
     "DDOG":  "Datadog",
@@ -61,37 +61,37 @@ AI_DATA_PLATFORM = {
     "SOUN":  "SoundHound AI",
 }
 
-# Layer 5: AI Applications（AI 應用軟體）— 12 支
+# Layer 5 AI applications — 12 names
 AI_APPLICATIONS = {
     "CRM":   "Salesforce (Einstein)",
     "NOW":   "ServiceNow",
     "ADBE":  "Adobe (Firefly)",
-    "INTU":  "Intuit (AI 稅務)",
+    "INTU":  "Intuit (AI tax)",
     "WDAY":  "Workday",
     "TEAM":  "Atlassian",
     "HUBS":  "HubSpot",
     "SHOP":  "Shopify",
-    "TTD":   "The Trade Desk (AI 廣告)",
-    "APP":   "AppLovin (AI 廣告)",
+    "TTD":   "The Trade Desk (AI advertising)",
+    "APP":   "AppLovin (AI advertising)",
     "U":     "Unity (AI 3D)",
     "ZM":    "Zoom (AI Companion)",
 }
 
-# Layer 6: AI Consumer & Content（AI 消費與內容）— 10 支
+# Layer 6 Consumer & content — 10 names
 AI_CONSUMER = {
-    "SPOT":  "Spotify (AI 推薦)",
-    "NFLX":  "Netflix (AI 內容)",
+    "SPOT":  "Spotify (AI recommendations)",
+    "NFLX":  "Netflix (AI content)",
     "RBLX":  "Roblox (AI UGC)",
-    "DUOL":  "Duolingo (AI 教學)",
+    "DUOL":  "Duolingo (AI learning)",
     "DIS":   "Disney",
     "WBD":   "Warner Bros Discovery",
-    "SONY":  "Sony Group",   # ← 你的目標公司
+    "SONY":  "Sony Group",   # target company
     "PINS":  "Pinterest",
-    "SNAP":  "Snap (AI 濾鏡)",
-    "RDDT":  "Reddit (AI 數據授權)",
+    "SNAP":  "Snap (AI filters)",
+    "RDDT":  "Reddit (AI data licensing)",
 }
 
-# 合併
+# Combined universe
 ALL_STOCKS = {
     **AI_INFRASTRUCTURE,
     **AI_CLOUD,
@@ -100,9 +100,9 @@ ALL_STOCKS = {
     **AI_APPLICATIONS,
     **AI_CONSUMER,
 }
-TICKER_LIST = list(ALL_STOCKS.keys())  # 共 60 支
+TICKER_LIST = list(ALL_STOCKS.keys())  # 60 names
 
-# AI 層次分類
+# AI layer membership
 AI_LAYERS = {
     "layer1_infrastructure": list(AI_INFRASTRUCTURE.keys()),
     "layer2_cloud":          list(AI_CLOUD.keys()),
@@ -112,49 +112,50 @@ AI_LAYERS = {
     "layer6_consumer":       list(AI_CONSUMER.keys()),
 }
 
-# 各層次在當前 AI 週期的基礎分（可調整）
+# Base points for each layer in the current AI cycle (adjustable)
 LAYER_BASE_SCORE = {
-    "layer1_infrastructure": 15,   # AI CapEx 高峰期
+    "layer1_infrastructure": 15,   # peak AI CapEx
     "layer2_cloud":          15,
     "layer3_foundation":     10,
     "layer4_platform":       12,
-    "layer5_applications":   14,   # 2025 開始爆發
+    "layer5_applications":   14,   # inflection starting in 2025
     "layer6_consumer":       10,
 }
 
-# ── 產業分類（估值與基本面用）───────────────────────────
-# 與 AI_LAYERS 的差異：AI_LAYERS 是「價值鏈位置」（投資敘事用），
-# SECTOR_MAP 是「同業可比族群」（P/E 比較與產業基礎分用）。
-# 兩者刻意不同：MSFT / GOOGL 在價值鏈屬 Layer 2 Cloud，但估值上與軟體股可比。
+# ── Sector groups (valuation and fundamentals) ─────────
+# AI_LAYERS is the value-chain position used in the investment narrative.
+# SECTOR_MAP is the peer group used for P/E comparisons and the sector base score.
+# They differ on purpose: MSFT / GOOGL sit in Layer 2 Cloud & compute,
+# but for valuation they are compared with software names.
 SECTOR_MAP = {
-    # 晶片、記憶體、設備、AI 伺服器硬體
+    # Chips, memory, equipment, and AI server hardware
     "semiconductor": [
         "NVDA", "AMD", "AVGO", "MRVL", "ARM",
         "MU", "WDC", "TSM", "ASML", "AMAT",
         "LRCX", "KLAC", "SMCI", "DELL", "VRT",
     ],
-    # 雲端、基礎模型、資料平台、AI SaaS（估值邏輯同屬高成長軟體）
+    # Cloud, foundation models, data platforms, and AI SaaS (same high-growth software valuation logic)
     "ai_software": [
         "MSFT", "GOOGL", "AMZN", "ORCL", "IBM", "CRWV", "NET", "AKAM",
         "META", "BIDU", "PLTR",
         "SNOW", "DDOG", "MDB", "ESTC", "AI", "S", "PATH", "GTLB", "CFLT", "SOUN",
         "CRM", "NOW", "ADBE", "INTU", "WDAY", "TEAM", "HUBS", "SHOP", "TTD", "APP", "U", "ZM",
     ],
-    # 消費電子、車用與消費內容娛樂
+    # Consumer electronics, autos, and consumer content
     "consumer": [
         "AAPL", "TSLA",
         "SPOT", "NFLX", "RBLX", "DUOL", "DIS", "WBD", "SONY", "PINS", "SNAP", "RDDT",
     ],
 }
 
-# 產業基礎分加分（fundamentals 以 50 + 本值作為產業前景基礎分）
+# Sector bonus. fundamentals uses 50 + this value as the industry-outlook base.
 SECTOR_BASE_SCORE = {
-    "semiconductor": 15,   # AI CapEx 高峰期最直接受惠
-    "ai_software":   14,   # AI 商業化落地中，成長性高
-    "consumer":      10,   # AI 影響較間接
+    "semiconductor": 15,   # most direct beneficiary of peak AI CapEx
+    "ai_software":   14,   # AI commercialization is underway; growth is high
+    "consumer":      10,   # AI exposure is more indirect
 }
 
-# ── 綜合評分權重與篩選門檻 ─────────────────────────────
+# ── Composite score weights and filter thresholds ──────
 SCORE_WEIGHTS = {
     "technical":   0.25,
     "fundamental": 0.25,
@@ -171,33 +172,37 @@ FILTER_THRESHOLDS = {
     "min_volume_ratio": 0.5,
 }
 
-# ── 回測固定區間 ───────────────────────────────────────
-# 規則在看到績效之前就定好，不隨執行日移動。修改前必須重新驗收。
-# 36 個完整月：第一次換股是 BACKTEST_FIRST_REBALANCE_MONTH 的最後一個交易日，
-# 之後每個月最後一個交易日換股，持有到下一個月底。
-# 最後一個持有日是 BACKTEST_LAST_MONTH 的最後一個交易日，當天不再換股。
-# BACKTEST_START / BACKTEST_END 是這段規則的日曆邊界，由下面三個常數推導。
-# 實際換股日與持有日再依交易日曆落到月底。
+# ── Fixed backtest window ──────────────────────────────
+# The rule was set before any performance was seen and does not move with the run date.
+# Re-validate before changing it.
+# 36 full months. The first rebalance is the last trading day of
+# BACKTEST_FIRST_REBALANCE_MONTH. After that, rebalance on the last trading
+# day of each month and hold through the next month-end.
+# The last holding day is the last trading day of BACKTEST_LAST_MONTH; there is
+# no rebalance that day.
+# BACKTEST_START / BACKTEST_END are the calendar bounds of that rule, derived
+# from the three constants below. Actual rebalance and holding dates then snap
+# to month-end on the trading calendar.
 from datetime import date as _date
 from datetime import timedelta as _timedelta
 
 
 def _parse_year_month(token: str) -> tuple[int, int]:
-    """把 YYYY-MM 拆成年、月。格式不對或月份超出 1–12 就拒絕。"""
+    """Split YYYY-MM into year and month. Reject a bad format or a month outside 1–12."""
     year_text, month_text = str(token).split("-", 1)
     year, month = int(year_text), int(month_text)
     if month < 1 or month > 12:
-        raise ValueError(f"月份必須介於 1 到 12，收到 {token}")
+        raise ValueError(f"Month must be between 1 and 12, got {token}")
     return year, month
 
 
 def _month_index(year: int, month: int) -> int:
-    """把年、月換成可相減的月份序號。"""
+    """Turn a year and month into a month index that can be subtracted."""
     return year * 12 + month - 1
 
 
 def _calendar_month_end(year: int, month: int) -> _date:
-    """該月的最後一個日曆日。交易日曆上的月底另由回測決定。"""
+    """Last calendar day of the month. The trading-calendar month-end is chosen by the backtest."""
     if month == 12:
         next_month = _date(year + 1, 1, 1)
     else:
@@ -205,7 +210,7 @@ def _calendar_month_end(year: int, month: int) -> _date:
     return next_month - _timedelta(days=1)
 
 
-# 第一次換股所在月、最後一個持有月、完整月數。三個一起決定區間。
+# First rebalance month, last holding month, and the number of full months. Together they fix the window.
 BACKTEST_FIRST_REBALANCE_MONTH = "2023-09"
 BACKTEST_LAST_MONTH = "2026-09"
 BACKTEST_MONTHS = 36
@@ -215,17 +220,17 @@ _end_year, _end_month = _parse_year_month(BACKTEST_LAST_MONTH)
 _month_span = _month_index(_end_year, _end_month) - _month_index(_start_year, _start_month)
 if _month_span != BACKTEST_MONTHS:
     raise ValueError(
-        f"{BACKTEST_FIRST_REBALANCE_MONTH} 到 {BACKTEST_LAST_MONTH} 跨 {_month_span} 個月，"
-        f"與 BACKTEST_MONTHS={BACKTEST_MONTHS} 不一致"
+        f"{BACKTEST_FIRST_REBALANCE_MONTH} to {BACKTEST_LAST_MONTH} spans {_month_span} months, "
+        f"which does not match BACKTEST_MONTHS={BACKTEST_MONTHS}"
     )
 
-# 邊界含第一次換股月的整個月份，也含最後一個持有月的整個月份。
+# The bounds include the whole first rebalance month and the whole last holding month.
 BACKTEST_START = _date(_start_year, _start_month, 1)
 BACKTEST_END = _calendar_month_end(_end_year, _end_month)
-# 組 A 名單判斷「曾經進過 S&P 500」的迄日。這是名單定義，不是回測區間。
+# End date for deciding whether a name was ever in the S&P 500 for Group A. This defines the list, not the backtest window.
 GROUP_DEFINITION_END = _date(2026, 9, 21)
 
-# ── 技術指標參數與技術面子分數權重 ─────────────────────
+# ── Technical-indicator parameters and sub-score weights ─
 TECH_PARAMS = {
     "ma_periods":        [5, 20, 60, 200],
     "rsi_period":        14,
@@ -241,17 +246,17 @@ TECH_PARAMS = {
     "adx_period":        14,
 }
 
-# 技術面五項子分數權重（總和需為 1.0）
+# Weights for the five technical sub-scores (must sum to 1.0)
 TECH_SCORE_WEIGHTS = {
-    "macd":      0.25,   # 趨勢轉折訊號
-    "ma_trend":  0.25,   # 多空排列
-    "rsi":       0.20,   # 超買超賣
-    "bollinger": 0.15,   # 波動位置
-    "volume":    0.15,   # 量能確認
+    "macd":      0.25,   # trend-turn signal
+    "ma_trend":  0.25,   # moving-average alignment
+    "rsi":       0.20,   # overbought / oversold
+    "bollinger": 0.15,   # position inside the volatility band
+    "volume":    0.15,   # volume confirmation
 }
 
-# ── 估值參數 ───────────────────────────────────────────
-# 各產業的本益比區間（low 便宜 / mid 合理 / high 偏貴）
+# ── Valuation parameters ───────────────────────────────
+# P/E bands by sector (low = cheap, mid = fair, high = expensive)
 VALUATION_PARAMS = {
     "pe_benchmarks": {
         "semiconductor": {"low": 18, "mid": 28, "high": 40},
@@ -260,7 +265,7 @@ VALUATION_PARAMS = {
     },
 }
 
-# ── 預測參數（Prophet 與線性備援共用）──────────────────
+# ── Forecast parameters (shared by Prophet and the linear fallback) ─
 PREDICTION_PARAMS = {
     "history_days":              365,
     "forecast_days":             30,
@@ -268,7 +273,7 @@ PREDICTION_PARAMS = {
     "prophet_changepoint_prior": 0.05,
 }
 
-# ── 路徑與資料目錄 ─────────────────────────────────────
+# ── Paths and data directories ─────────────────────────
 import pathlib as _pathlib
 
 _PROJECT_ROOT = _pathlib.Path(__file__).resolve().parent
@@ -281,7 +286,7 @@ TRACK_RECORD_DIR = DATA_DIR / "track_record"
 for _d in (DATA_DIR, CACHE_DIR, PICKS_DIR, LOG_DIR, TRACK_RECORD_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
-# ── API 金鑰（從 .env 讀取）─────────────────────────────
+# ── API keys (read from .env) ──────────────────────────
 import os as _os
 
 try:
@@ -289,9 +294,9 @@ try:
 
     _load_dotenv(_PROJECT_ROOT / ".env")
 except Exception:  # noqa: BLE001
-    pass  # 未安裝 python-dotenv 時仍可從系統環境變數讀取
+    pass  # Without python-dotenv, keys can still come from the process environment
 
-# 未設定時為 None；sentiment 與 profile_fetcher 會自動退回模板版輸出
+# None when unset. sentiment and profile_fetcher then fall back to template output
 ANTHROPIC_API_KEY = _os.getenv("ANTHROPIC_API_KEY") or None
 ALPHA_VANTAGE_KEY = _os.getenv("ALPHA_VANTAGE_KEY") or None
 FMP_API_KEY = _os.getenv("FMP_API_KEY") or None

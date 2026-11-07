@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-理想進場價區間：依 daily_picker.analyze_single_stock 整合結果計算。
+Ideal entry-price band, computed from the combined result of daily_picker.analyze_single_stock.
 
-可選在 stock_data 內附帶 raw 的 price_history（DataFrame），以計算近 30 日低點支撐。
+stock_data may include the raw price_history DataFrame so the recent 30-day low can be used as support.
 """
 
 from __future__ import annotations
@@ -32,11 +32,11 @@ def get_status_emoji(status: str) -> str:
 
 def get_status_label_cn(status: str) -> str:
     return {
-        "buy_now": "立即可進場",
-        "watch": "接近進場區",
-        "wait": "等待回檔",
-        "avoid": "不宜追高",
-    }.get(status, "中性")
+        "buy_now": "Buy now",
+        "watch": "Near the entry zone",
+        "wait": "Wait for a pullback",
+        "avoid": "Do not chase",
+    }.get(status, "Neutral")
 
 
 def _to_float(x: Any, default: float | None = None) -> float | None:
@@ -52,7 +52,7 @@ def _to_float(x: Any, default: float | None = None) -> float | None:
 
 
 def _last_n_low_min(df: pd.DataFrame, n: int = 30) -> float | None:
-    """過去 n 根 K 棒最低價（Low）。"""
+    """Lowest Low over the last n bars."""
     try:
         if not isinstance(df, pd.DataFrame) or df.empty:
             return None
@@ -85,8 +85,8 @@ def _ordered_entry_triple(
     current: float,
 ) -> tuple[float, float, float, bool]:
     """
-    確保 conservative ≤ standard ≤ aggressive ≤ current。
-    若不成立，改為 current × (0.92, 0.96, 0.98)，並標記 used_fallback。
+    Keep conservative <= standard <= aggressive <= current.
+    If that order fails, use current times (0.92, 0.96, 0.98) and mark used_fallback.
     """
     c, s, a, cur = conservative, standard, aggressive, current
     ok = c <= s <= a <= cur and cur > 0
@@ -98,12 +98,12 @@ def _ordered_entry_triple(
 
 def calculate_entry_prices(stock_data: dict[str, Any]) -> dict[str, Any]:
     """
-    依 analyze_single_stock 結果計算進場價與狀態。
+    Compute entry prices and status from an analyze_single_stock result.
 
-    可選：stock_data['price_history'] 為 pd.DataFrame（與 fetch_stock_data 相同），
-    用於「過去 30 日最低點」支撐；若缺省則僅以布林下軌與 MA20 估算標準進場價。
+    Optional: stock_data['price_history'] is a pd.DataFrame (the same shape as fetch_stock_data)
+    used for the "lowest close of the last 30 days" support. Without it, the standard entry uses only the lower Bollinger band and MA20.
     """
-    err_reasoning = "資料不足，無法完整計算進場價，請確認技術與估值欄位。"
+    err_reasoning = "Not enough data to compute a full entry price. Check the technical and valuation fields."
     empty = {
         "ticker": str(stock_data.get("ticker") or "?"),
         "current_price": 0.0,
@@ -142,13 +142,13 @@ def calculate_entry_prices(stock_data: dict[str, Any]) -> dict[str, Any]:
         valuation_signal = str(valuation.get("valuation_signal") or "").strip().lower()
         rsi_signal = str((technical.get("signals") or {}).get("rsi") or "").strip()
 
-        # (A) 保守
+        # (A) Conservative
         if fair_raw is not None and fair_raw > 0:
             conservative = fair_raw * 0.75
         else:
             conservative = current * 0.85
 
-        # (B) 標準：三者取最大
+        # (B) Standard: the maximum of the three candidates
         cv = technical.get("current_values") if isinstance(technical.get("current_values"), dict) else {}
         bb_lower = _to_float(cv.get("bb_lower"))
         ma20 = _to_float(cv.get("ma20"))
@@ -166,7 +166,7 @@ def calculate_entry_prices(stock_data: dict[str, Any]) -> dict[str, Any]:
         else:
             standard = current * 0.94
 
-        # (C) 積極
+        # (C) Aggressive
         retr = _retracement_pct(composite_score)
         aggressive = current * (1.0 - retr)
 
@@ -177,9 +177,9 @@ def calculate_entry_prices(stock_data: dict[str, Any]) -> dict[str, Any]:
         c_f, s_f, a_f, used_fb = _ordered_entry_triple(conservative, standard, aggressive, current)
         conservative, standard, aggressive = c_f, s_f, a_f
         if used_fb:
-            _log.debug("%s 進場價順序異常，改用 current×(0.92,0.96,0.98)", ticker)
+            _log.debug("%s entry prices were out of order; using current x (0.92, 0.96, 0.98)", ticker)
 
-        # 距離百分比（相對 current）
+        # Distance percents, relative to current.
         to_fair = (fair_for_pct - current) / current * 100.0
         to_cons = (conservative - current) / current * 100.0
         to_std = (standard - current) / current * 100.0
@@ -218,33 +218,33 @@ def calculate_entry_prices(stock_data: dict[str, Any]) -> dict[str, Any]:
         suffix = ""
         if current_status == "avoid":
             if fund_total >= 85:
-                suffix += "（基本面佳，宜等回檔後再分批布局）"
+                suffix += " (fundamentals are strong; wait for a pullback and then scale in)"
             if valuation_signal == "undervalued":
-                suffix += "（中長期估值仍偏低，但短線已脫離進場帶）"
+                suffix += " (the medium-term valuation is still low, but the short-term price has left the entry band)"
         else:
             if fund_total >= 85:
-                suffix += "（基本面優異，可較大膽分批）"
+                suffix += " (fundamentals are excellent; scaling in can be a bit more aggressive)"
             if valuation_signal == "undervalued":
-                suffix += "（估值低估，下檔有限）"
+                suffix += " (valuation is cheap and downside looks limited)"
 
         pct_to_std = max(0.0, (current - standard) / current * 100.0) if current > 0 else 0.0
 
         if current_status == "buy_now":
             base = (
-                f"當前股價 {current:.2f} 已進入進場區間（標準進場 {standard:.2f}），可分批建倉。"
+                f"The current price {current:.2f} is inside the entry zone (standard entry {standard:.2f}). Scale in."
             )
         elif current_status == "watch":
             base = (
-                f"{ticker} 接近進場區，距標準進場價 {standard:.2f} 還需下跌 {pct_to_std:.1f}%，建議耐心等待。"
+                f"{ticker} is near the entry zone. It still needs to fall {pct_to_std:.1f}% to the standard entry {standard:.2f}. Wait."
             )
         elif current_status == "wait":
-            base = f"{ticker} 已突破進場區間，建議等回測 {standard:.2f} 附近再進場。"
+            base = f"{ticker} has broken above the entry zone. Wait for a retest near {standard:.2f} before entering."
         elif avoid_val:
-            base = f"{ticker} 估值偏高且技術面過熱，不建議追高，等待 -10% 以上回檔。"
+            base = f"{ticker} looks expensive and the technicals are overheated. Do not chase. Wait for a pullback of 10% or more."
         else:
             base = (
-                f"{ticker} 股價已明顯高於積極進場區（逾 5%），不建議追高，"
-                f"可等待回檔至標準進場 {standard:.2f} 附近再評估。"
+                f"{ticker} is clearly above the aggressive entry zone (more than 5%). Do not chase. "
+                f"Wait for a pullback near the standard entry {standard:.2f} and reassess."
             )
 
         reasoning = (base + suffix).strip()
@@ -255,17 +255,17 @@ def calculate_entry_prices(stock_data: dict[str, Any]) -> dict[str, Any]:
             {
                 "price": round(float(first_px), 4),
                 "allocation_pct": 30,
-                "condition": "第 1 批：現價進場（已在買進區）或積極價附近" if current_status == "buy_now" else "第 1 批：積極進場價附近試單",
+                "condition": "Tranche 1: enter at the current price (already in the buy zone) or near the aggressive price" if current_status == "buy_now" else "Tranche 1: a starter near the aggressive entry",
             },
             {
                 "price": round(float(standard), 4),
                 "allocation_pct": 35,
-                "condition": "第 2 批：標準進場（技術支撐區）",
+                "condition": "Tranche 2: standard entry (technical support)",
             },
             {
                 "price": round(float(conservative), 4),
                 "allocation_pct": 35,
-                "condition": "第 3 批：保守進場（安全邊際較大）",
+                "condition": "Tranche 3: conservative entry (a larger margin of safety)",
             },
         ]
 
@@ -297,11 +297,11 @@ def calculate_entry_prices(stock_data: dict[str, Any]) -> dict[str, Any]:
             "risk_reward_ratio": round(float(risk_reward), 4),
         }
     except Exception as e:  # noqa: BLE001
-        _log.warning("calculate_entry_prices 失敗: %s", e)
+        _log.warning("calculate_entry_prices failed: %s", e)
         return {
             **empty,
             "ticker": str(stock_data.get("ticker") or "?"),
-            "reasoning": f"計算過程發生錯誤：{e}",
+            "reasoning": f"An error occurred during the calculation: {e}",
         }
 
 
@@ -315,23 +315,23 @@ if __name__ == "__main__":
 
     for sym in ("NVDA", "TSM", "AAPL"):
         print("\n" + "=" * 72)
-        print(f"  {sym} 進場價分析")
+        print(f"  {sym} entry-price analysis")
         print("=" * 72)
         raw = fetch_stock_data(sym, force_refresh=False)
         if not raw:
-            print("  無法取得資料，略過")
+            print("  Could not load data, skipping")
             continue
         analyzed = analyze_single_stock(sym, raw)
         analyzed["price_history"] = raw.get("price_history")
         out = calculate_entry_prices(analyzed)
-        print(f"  現價: {out['current_price']}")
+        print(f"  Price: {out['current_price']}")
         ep = out["entry_prices"]
-        print(f"  進場價 — 保守 {ep['conservative']:.2f} | 標準 {ep['standard']:.2f} | 積極 {ep['aggressive']:.2f}")
-        print(f"  狀態: {get_status_emoji(out['current_status'])} {out['current_status']} / {get_status_label_cn(out['current_status'])}")
-        print(f"  區間位置: {out['current_zone']}")
-        print(f"  風險報酬比: {out['risk_reward_ratio']}")
-        print(f"  說明: {out['reasoning']}")
-        print("  分批計畫:")
+        print(f"  Entry — conservative {ep['conservative']:.2f} | standard {ep['standard']:.2f} | aggressive {ep['aggressive']:.2f}")
+        print(f"  Status: {get_status_emoji(out['current_status'])} {out['current_status']} / {get_status_label_cn(out['current_status'])}")
+        print(f"  Zone: {out['current_zone']}")
+        print(f"  Risk/reward: {out['risk_reward_ratio']}")
+        print(f"  Note: {out['reasoning']}")
+        print("  Scale-in plan:")
         for b in out.get("batch_plan") or []:
             print(f"    {b.get('allocation_pct')}% @ {b.get('price')} — {b.get('condition')}")
-        print(f"  距離%: {out['distance']}")
+        print(f"  Distance %: {out['distance']}")

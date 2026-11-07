@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-股票新聞抓取器：支援 yfinance 新舊 news 結構解析與每日本地快取。
+Stock news fetcher: parses old and new yfinance news shapes and caches them locally each day.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/news_fetcher.py
 """
 
@@ -20,7 +20,7 @@ from typing import Any
 import yfinance as yf
 from tqdm import tqdm
 
-# 從專案根目錄載入 config（直接執行本檔時 sys.path 預設為 src/）
+# Load config from the project root (sys.path defaults to src/ when this file is run directly).
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -31,7 +31,7 @@ _logger: logging.Logger | None = None
 
 
 def _get_logger() -> logging.Logger:
-    """取得新聞模組 logger（同時輸出到 console 與 logs）。"""
+    """Return the news-module logger (console and the logs directory)."""
     global _logger
     if _logger is not None:
         return _logger
@@ -65,7 +65,7 @@ def _get_logger() -> logging.Logger:
 
 
 def _news_cache_path(ticker: str) -> Path:
-    """回傳當日新聞快取路徑：CACHE_DIR/YYYY-MM-DD/news/{ticker}.json。"""
+    """Today's news cache path: CACHE_DIR/YYYY-MM-DD/news/{ticker}.json."""
     today = datetime.now().strftime("%Y-%m-%d")
     p = Path(CACHE_DIR) / today / "news"
     p.mkdir(parents=True, exist_ok=True)
@@ -73,7 +73,7 @@ def _news_cache_path(ticker: str) -> Path:
 
 
 def _safe_parse_datetime(value: Any) -> datetime | None:
-    """盡量把多種格式時間轉成 UTC aware datetime。"""
+    """Turn as many time formats as possible into a UTC-aware datetime."""
     if value is None:
         return None
     try:
@@ -96,10 +96,10 @@ def _safe_parse_datetime(value: Any) -> datetime | None:
 
 def _clean_text(text: str) -> str:
     """
-    清理文字內容：
-    - 去除 HTML 標籤
-    - 合併多餘空白與換行
-    - 長度截斷 500 字元
+    Clean text:
+    - strip HTML tags
+    - collapse extra spaces and newlines
+    - truncate to 500 characters
     """
     s = "" if text is None else str(text)
     s = re.sub(r"<[^>]+>", " ", s)
@@ -110,7 +110,7 @@ def _clean_text(text: str) -> str:
 
 
 def _parse_news_item(item: dict[str, Any]) -> dict[str, Any] | None:
-    """解析單筆新聞，兼容 yfinance 舊版/新版結構。"""
+    """Parse one news item. Compatible with the old and new yfinance shapes."""
     if not isinstance(item, dict):
         return None
 
@@ -121,7 +121,7 @@ def _parse_news_item(item: dict[str, Any]) -> dict[str, Any] | None:
     related: list[str] = []
     published_dt: datetime | None = None
 
-    # 結構 A（舊版）
+    # Shape A (older yfinance).
     if "title" in item or "providerPublishTime" in item:
         try:
             title = _clean_text(str(item.get("title", "")))
@@ -147,7 +147,7 @@ def _parse_news_item(item: dict[str, Any]) -> dict[str, Any] | None:
             related = []
         published_dt = _safe_parse_datetime(item.get("providerPublishTime"))
 
-    # 結構 B（新版 1.3.0）
+    # Shape B (yfinance 1.3.0).
     content = item.get("content")
     if isinstance(content, dict):
         try:
@@ -187,7 +187,7 @@ def _parse_news_item(item: dict[str, Any]) -> dict[str, Any] | None:
     if not title:
         return None
     if published_dt is None:
-        # 若沒有時間，視為舊新聞過濾掉（避免排序與天數判斷不準）
+        # No timestamp means it is treated as old news and dropped, so sorting and the day window stay reliable.
         return None
 
     published_at = published_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
@@ -198,12 +198,12 @@ def _parse_news_item(item: dict[str, Any]) -> dict[str, Any] | None:
         "published_at": published_at,
         "summary": summary,
         "tickers_related": related,
-        "_published_dt": published_dt,  # 內部排序用，寫入前會移除
+        "_published_dt": published_dt,  # Used only for sorting. Removed before the file is written.
     }
 
 
 def _load_cache(path: Path) -> list[dict[str, Any]] | None:
-    """讀取當日快取 JSON。"""
+    """Read today's cached JSON."""
     if not path.is_file():
         return None
     try:
@@ -217,22 +217,22 @@ def _load_cache(path: Path) -> list[dict[str, Any]] | None:
 
 
 def _save_cache(path: Path, news: list[dict[str, Any]]) -> None:
-    """寫入當日快取 JSON。"""
+    """Write today's cached JSON."""
     with open(path, "w", encoding="utf-8") as f:
         json.dump(news, f, ensure_ascii=False, indent=2)
 
 
 def fetch_stock_news(ticker: str, max_items: int = 10, force_refresh: bool = False) -> list[dict[str, Any]]:
     """
-    抓取單一股票新聞（yfinance），並回傳統一格式。
+    Fetch news for one stock from yfinance and return a common shape.
 
-    參數:
-        ticker: 股票代號。
-        max_items: 最多回傳筆數。
-        force_refresh: True 時略過當日快取重抓。
+    Args:
+        ticker: Ticker symbol.
+        max_items: Maximum number of items to return.
+        force_refresh: When True, skip today's cache and fetch again.
 
-    回傳:
-        list[dict]，欄位為 title/publisher/link/published_at/summary/tickers_related。
+    Returns:
+        list[dict] with title, publisher, link, published_at, summary, and tickers_related.
     """
     log = _get_logger()
     sym = ticker.upper()
@@ -242,17 +242,17 @@ def fetch_stock_news(ticker: str, max_items: int = 10, force_refresh: bool = Fal
     if not force_refresh:
         cached = _load_cache(cache_path)
         if cached is not None:
-            log.info("使用新聞快取：%s (%s 筆)", sym, len(cached))
+            log.info("Using the news cache: %s (%s items)", sym, len(cached))
             return cached[:max_n] if max_n else []
 
     try:
         raw_news = yf.Ticker(sym).news or []
     except Exception as e:  # noqa: BLE001
-        log.error("抓取 %s 新聞失敗：%s", sym, e)
+        log.error("Failed to fetch news for %s: %s", sym, e)
         return []
 
     if not isinstance(raw_news, list) or not raw_news:
-        log.info("%s 無新聞資料", sym)
+        log.info("%s has no news", sym)
         _save_cache(cache_path, [])
         return []
 
@@ -276,7 +276,7 @@ def fetch_stock_news(ticker: str, max_items: int = 10, force_refresh: bool = Fal
         cleaned.append(n)
 
     _save_cache(cache_path, cleaned)
-    log.info("成功抓取 %s 新聞 %s 筆", sym, len(cleaned))
+    log.info("Fetched %s news items for %s", len(cleaned), sym)
     return cleaned
 
 
@@ -286,19 +286,19 @@ def fetch_news_batch(
     force_refresh: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     """
-    批量抓取多檔新聞。
+    Fetch news for many symbols.
 
-    - 每檔請求後 sleep 0.5 秒避免限流
-    - 失敗時該檔回傳 []
+    - Sleep 0.5 seconds after each request to avoid rate limits
+    - A failure returns [] for that symbol
     """
     log = _get_logger()
     out: dict[str, list[dict[str, Any]]] = {}
     symbols = [str(t).upper() for t in tickers]
-    for i, sym in enumerate(tqdm(symbols, desc="抓取新聞", unit="檔")):
+    for i, sym in enumerate(tqdm(symbols, desc="News", unit="name")):
         try:
             out[sym] = fetch_stock_news(sym, max_items=max_per_ticker, force_refresh=force_refresh)
         except Exception as e:  # noqa: BLE001
-            log.error("批量抓取 %s 失敗：%s", sym, e)
+            log.error("Batch fetch failed for %s: %s", sym, e)
             out[sym] = []
         if i < len(symbols) - 1:
             time.sleep(0.5)
@@ -306,8 +306,8 @@ def fetch_news_batch(
 
 
 if __name__ == "__main__":
-    # 簡單測試
+    # A short test
     sample = ["NVDA", "AAPL", "TSM"]
     res = fetch_news_batch(sample, max_per_ticker=5, force_refresh=False)
     for t in sample:
-        print(f"{t}: {len(res.get(t, []))} 則")
+        print(f"{t}: {len(res.get(t, []))} items")

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-公司簡介抓取與快取：yfinance → Wikipedia → Claude 整合（90 天快取）。
+Company profiles: yfinance, then Wikipedia, then Claude, cached for 90 days.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/profile_fetcher.py
 """
 
@@ -22,7 +22,7 @@ import requests
 import yfinance as yf
 from tqdm import tqdm
 
-# 從專案根目錄載入 config
+# Load config from the project root
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -49,7 +49,7 @@ try:
 except ImportError:
     anthropic = None  # type: ignore[assignment, misc]
 
-# Yahoo exchange code（部分）→ Google Finance 市場代碼
+# Yahoo exchange code (partial) to a Google Finance market code
 _EXCHANGE_TO_GOOGLE: dict[str, str] = {
     "NMS": "NASDAQ",
     "NCM": "NASDAQ",
@@ -62,7 +62,7 @@ _EXCHANGE_TO_GOOGLE: dict[str, str] = {
     "PCX": "NYSE",
     "BTS": "NYSE",
     "BATS": "NASDAQ",
-    "HKG": "HKG",  # 盡量保留
+    "HKG": "HKG",  # keep the original code when there is no better mapping
     "KSC": "NASDAQ",
     "FRA": "FRA",
     "JNB": "NYSE",
@@ -72,7 +72,7 @@ _EXCHANGE_TO_GOOGLE: dict[str, str] = {
 
 def _fetch_from_yfinance(ticker: str) -> dict[str, Any]:
     """
-    使用 yf.Ticker(ticker).info 取得欄位：
+    Read yf.Ticker(ticker).info for:
     longName, sector, industry, country, website, fullTimeEmployees, marketCap, longBusinessSummary, exchange, cik
     """
     sym = ticker.strip().upper()
@@ -99,7 +99,7 @@ def _fetch_from_yfinance(ticker: str) -> dict[str, Any]:
             "cik": cik,
         }
     except Exception as e:  # noqa: BLE001
-        _log.warning("yfinance %s 讀取失敗: %s", sym, e)
+        _log.warning("yfinance read failed for %s: %s", sym, e)
     return out
 
 
@@ -108,7 +108,7 @@ def _wikipedia_get_summary(
     session: requests.Session,
 ) -> dict[str, Any] | None:
     """
-    呼叫 English Wikipedia page summary API。
+    Call the English Wikipedia page-summary API.
     https://en.wikipedia.org/api/rest_v1/page/summary/{title}
     """
     t = str(page_title or "").strip().replace(" ", "_")
@@ -136,7 +136,7 @@ def _wikipedia_get_summary(
 
 def _fetch_from_wikipedia(company_name: str) -> dict[str, Any]:
     """
-    取得英文維基摘要。404 時可嘗試加 Inc. / Corporation 等變體。
+    Fetch an English Wikipedia extract. On 404, try Inc. / Corporation variants.
     """
     if not (company_name or "").strip():
         return {}
@@ -154,20 +154,21 @@ def _fetch_from_wikipedia(company_name: str) -> dict[str, Any]:
     for title in titles:
         data = _wikipedia_get_summary(title, session)
         if data and (data.get("extract") or data.get("content_url")):
-            _log.info("Wikipedia 命中: %s", title)
+            _log.info("Wikipedia hit: %s", title)
             return {
                 "title": data.get("title", title),
                 "extract": data.get("extract", ""),
                 "content_url": data.get("content_url", ""),
             }
-    _log.info("Wikipedia 無摘要: %s", name)
+    _log.info("Wikipedia has no extract: %s", name)
     return {}
 
 
 def _guess_ir_url(website: str) -> str:
     """
-    由官網推測 IR：例如 https://www.nvidia.com -> https://investor.nvidia.com
-    若難以推測可回空字串。
+    Guess an IR URL from the company site, for example
+    https://www.nvidia.com -> https://investor.nvidia.com.
+    Returns an empty string when the host cannot be parsed.
     """
     w = (website or "").strip()
     if not w.startswith("http"):
@@ -189,7 +190,7 @@ def _build_articles_list(
     yf_data: dict[str, Any],
     wiki_data: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """延伸閱讀連結：Wikipedia、官網、推測 IR、Yahoo、Google、SEC。"""
+    """Further-reading links: Wikipedia, website, guessed IR, Yahoo, Google, SEC."""
     name = (yf_data.get("longName") or ticker) or "Company"
     sym = str(ticker).upper()
     yf_website = (yf_data.get("website") or "") or ""
@@ -215,7 +216,7 @@ def _build_articles_list(
         )
     if yf_website:
         articles.append(
-            {"title": f"{name} 官方網站", "url": yf_website, "source": "Official", "type": "official"},
+            {"title": f"{name} official website", "url": yf_website, "source": "Official", "type": "official"},
         )
     if ir and yf_website and ir != yf_website:
         articles.append(
@@ -227,13 +228,13 @@ def _build_articles_list(
             },
         )
     articles.append(
-        {"title": "Yahoo Finance 個股頁", "url": f"https://finance.yahoo.com/quote/{sym}", "source": "Yahoo Finance", "type": "reference"},
+        {"title": "Yahoo Finance quote page", "url": f"https://finance.yahoo.com/quote/{sym}", "source": "Yahoo Finance", "type": "reference"},
     )
     articles.append(
         {"title": "Google Finance", "url": g_url, "source": "Google Finance", "type": "reference"},
     )
     articles.append(
-        {"title": "SEC 財報查詢", "url": sec_url, "source": "SEC", "type": "filing"},
+        {"title": "SEC filings search", "url": sec_url, "source": "SEC", "type": "filing"},
     )
     return articles
 
@@ -260,7 +261,8 @@ def _parse_claude_json_text(text: str) -> dict[str, Any] | None:
 
 def _fallback_claude_data(yf_data: dict[str, Any], wiki_data: dict[str, Any], ticker: str) -> dict[str, Any]:
     """
-    Claude 失敗或無金鑰：以 yfinance 英文 longBusinessSummary ＋ 維基擷取彙成繁中導讀風格說明（非即時翻譯，為模板敘事）。
+    Used when Claude fails or there is no API key.
+    Stitches the English yfinance summary and the Wikipedia extract into a template note.
     """
     name = (yf_data.get("longName") or ticker) or "Company"
     yf_s = (yf_data.get("longBusinessSummary") or "")[:1500]
@@ -268,22 +270,22 @@ def _fallback_claude_data(yf_data: dict[str, Any], wiki_data: dict[str, Any], ti
     wik = wik[:800] if wik else ""
 
     long_txt = (
-        f"{name} 為一檔在公開市場掛牌之標的。以下內容依據 yfinance 英文商業敘事與公開摘要彙整，"
-        f"作為公司輪廓參考（未經 LLM 重寫）。\n\n"
+        f"{name} is a publicly listed company. The note below is assembled from the "
+        f"English yfinance business description and public extracts, and has not been rewritten by an LLM.\n\n"
     )
     if yf_s:
-        long_txt += f"（英文敘事摘錄）\n{yf_s}\n\n"
+        long_txt += f"(yfinance excerpt)\n{yf_s}\n\n"
     if wik and not wik.isspace():
-        long_txt += f"（Wikipedia 擷要）\n{wik}\n"
+        long_txt += f"(Wikipedia extract)\n{wik}\n"
     if len(long_txt) < 80 and not yf_s and not wik:
-        long_txt = f"{ticker}：目前可取得的公開敘事較少，建議稍後重試或查閱公司年報/官網。"
+        long_txt = f"{ticker}: little public narrative is available. Try again later, or read the annual report and the company site."
 
     return {
-        "description_short": f"{name}，{yf_data.get('sector', '')}／{yf_data.get('industry', '')}。".replace("／／", "／")[:200],
+        "description_short": f"{name}, {yf_data.get('sector', '')}/{yf_data.get('industry', '')}.".replace("//", "/")[:200],
         "description_long": long_txt[:5000],
-        "business_segments": [str(yf_data.get("industry") or "綜合業務")],
-        "key_products": ["請參考英文敘事與年報產品章節"],
-        "competitors": ["產業同業，請參考年報風險/競爭敘事"],
+        "business_segments": [str(yf_data.get("industry") or "General business")],
+        "key_products": ["See the English description and the products section of the annual report"],
+        "competitors": ["Industry peers; see the competition discussion in the annual report"],
     }
 
 
@@ -293,7 +295,8 @@ def _generate_with_claude(
     wiki_data: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, str]:
     """
-    呼叫 Claude Haiku 4.5 產生繁中 JSON；成功 (dict, ''), 失敗 (None, 原因代碼或訊息)。
+    Ask Claude Haiku 4.5 for an English JSON profile.
+    Success is (dict, ''). Failure is (None, a reason code or message).
     """
     if not (ANTHROPIC_API_KEY or "").strip() or anthropic is None:
         return None, "no_api"
@@ -303,35 +306,35 @@ def _generate_with_claude(
     yf_industry = yf_data.get("industry") or "N/A"
     yf_country = yf_data.get("country") or "N/A"
     yf_employees = yf_data.get("fullTimeEmployees", "N/A")
-    yf_summary = (yf_data.get("longBusinessSummary") or "（無）")[:8000]
-    wiki_extract = (wiki_data.get("extract") if isinstance(wiki_data, dict) else None) or "（無）"
-    wiki_extract = (wiki_extract or "（無）")[:8000]
+    yf_summary = (yf_data.get("longBusinessSummary") or "(none)")[:8000]
+    wiki_extract = (wiki_data.get("extract") if isinstance(wiki_data, dict) else None) or "(none)"
+    wiki_extract = (wiki_extract or "(none)")[:8000]
 
-    system_prompt = """你是一位專業的投資研究員，擅長將英文資料整理成清楚的繁體中文公司簡介。
-只回傳一個 JSON 物件，不要 markdown 圍欄、不要前後多餘文字。"""
+    system_prompt = """You are an investment researcher. Turn English source material into a clear company profile.
+Return one JSON object only. No markdown fences and no text before or after the JSON."""
 
-    user_message = f"""請根據以下資料，為 {ticker} 股票生成繁體中文公司簡介。
+    user_message = f"""Using the sources below, write an English company profile for {ticker}.
 
-yfinance 資料：
-- 公司名稱：{yf_name}
-- 產業：{yf_sector} / {yf_industry}
-- 總部：{yf_country}
-- 員工數：{yf_employees}
-- 英文簡介：{yf_summary}
+yfinance:
+- Name: {yf_name}
+- Sector: {yf_sector} / {yf_industry}
+- Headquarters: {yf_country}
+- Employees: {yf_employees}
+- English description: {yf_summary}
 
-Wikipedia 摘要：
+Wikipedia extract:
 {wiki_extract}
 
-請回傳 JSON 格式（只回傳 JSON，不要其他文字）：
+Return JSON only, with no other text:
 {{
-  "description_short": "50-80 字的一句話簡介",
-  "description_long": "300-400 字的詳細介紹，包含歷史、主要業務、市場地位",
-  "business_segments": ["業務1（佔比）", "業務2", "業務3"],
-  "key_products": ["主要產品或服務 1", "產品 2", "產品 3"],
-  "competitors": ["主要競爭者 1", "競爭者 2", "競爭者 3"]
+  "description_short": "one sentence, about 50-80 words",
+  "description_long": "about 300-400 words covering history, main business, and market position",
+  "business_segments": ["segment 1 (share if known)", "segment 2", "segment 3"],
+  "key_products": ["main product or service 1", "product 2", "product 3"],
+  "competitors": ["competitor 1", "competitor 2", "competitor 3"]
 }}
 
-所有文字用繁體中文，保留專有名詞（如產品型號）原文。"""
+Write every string in English. Keep proper nouns, including product names, as they appear in the sources."""
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY.strip())
@@ -357,7 +360,7 @@ Wikipedia 摘要：
                 parsed[k] = default
         return parsed, ""
     except Exception as e:  # noqa: BLE001
-        _log.warning("Claude 整合失敗 %s: %s", ticker, e)
+        _log.warning("Claude profile failed for %s: %s", ticker, e)
         return None, str(e)
 
 
@@ -383,8 +386,8 @@ def _profile_path(ticker: str) -> Path:
 
 def get_profile(ticker: str, force_refresh: bool = False) -> dict[str, Any]:
     """
-    主流程：快取（依 ttl_days 與 fetched_at）→ yfinance → wikipedia → Claude 整合 → 寫回。
-    yfinance 嚴重失敗時寫 7 天短效可重試快取。
+    Main path: cache (ttl_days and fetched_at), then yfinance, Wikipedia, Claude, then write back.
+    A badly incomplete yfinance read is stored as a 7-day cache so it can be retried.
     """
     sym = ticker.strip().upper()
     path = _profile_path(sym)
@@ -394,12 +397,12 @@ def get_profile(ticker: str, force_refresh: bool = False) -> dict[str, Any]:
             with open(path, encoding="utf-8") as f:
                 cached = json.load(f)
             if isinstance(cached, dict) and _is_cache_fresh(cached):
-                _log.info("快取命中: %s", sym)
+                _log.info("Cache hit: %s", sym)
                 return cached
         except Exception as e:  # noqa: BLE001
-            _log.debug("讀快取失敗: %s", e)
+            _log.debug("Cache read failed: %s", e)
 
-    _log.info("新抓取: %s", sym)
+    _log.info("Fetching: %s", sym)
 
     yf_data = _fetch_from_yfinance(sym)
     company = yf_data.get("longName") or sym
@@ -413,8 +416,8 @@ def get_profile(ticker: str, force_refresh: bool = False) -> dict[str, Any]:
     )
 
     if not yf_strong:
-        # yfinance 幾乎沒內容：極小結果 + 7 天（可稍後重試）
-        _log.warning("yfinance 可用欄位不足: %s，寫 7 天快取", sym)
+        # yfinance returned almost nothing: store a short result for 7 days and retry later
+        _log.warning("yfinance fields are too thin for %s; writing a 7-day cache", sym)
         mini_yf: dict[str, Any] = {
             "longName": yf_data.get("longName") or sym,
             "ticker": sym,
@@ -456,12 +459,12 @@ def get_profile(ticker: str, force_refresh: bool = False) -> dict[str, Any]:
         content = claude_parsed
         src = ["yfinance", "wikipedia", "claude"]
     else:
-        _log.info("改用模板彙整 %s: err=%s", sym, err or "fallback")
+        _log.info("Using the template profile for %s: err=%s", sym, err or "fallback")
         content = _fallback_claude_data(yf_data, wiki_data, sym)
         if err == "no_api":
             src = ["yfinance", "wikipedia", "template"]
         else:
-            src = ["yfinance", "wikipedia", "template", "yfinance_english"]  # 敘事含英文敘事原文
+            src = ["yfinance", "wikipedia", "template", "yfinance_english"]  # the note includes the original English description
 
     result: dict[str, Any] = {
         "ticker": sym,
@@ -491,28 +494,28 @@ def _write_cache(path: Path, data: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        _log.info("已寫入快取: %s", path)
+        _log.info("Wrote cache: %s", path)
     except Exception as e:  # noqa: BLE001
-        _log.error("寫入快取失敗: %s", e)
+        _log.error("Cache write failed: %s", e)
 
 
 def get_profiles_batch(
     tickers: list[str],
     show_progress: bool = True,
 ) -> dict[str, dict[str, Any]]:
-    """批量抓公司簡介，失敗回傳空 dict 佔位不影響他檔。每筆 sleep 0.5 防 rate limit。"""
+    """Fetch many profiles. A failure becomes an empty dict and does not stop the rest. Sleep 0.5s between names."""
     out: dict[str, dict[str, Any]] = {}
     n = len(tickers)
     iterator: Any = range(n)
     if show_progress and n:
-        iterator = tqdm(range(n), desc="公司簡介", unit="檔")
+        iterator = tqdm(range(n), desc="Profiles", unit="name")
 
     for j in iterator:
         t = str(tickers[j]).upper()
         try:
             out[t] = get_profile(t, force_refresh=False)
         except Exception as e:  # noqa: BLE001
-            _log.error("%s 公司簡介失敗: %s", t, e)
+            _log.error("%s profile failed: %s", t, e)
             out[t] = {}
         if j < n - 1:
             time.sleep(0.5)
@@ -522,24 +525,24 @@ def get_profiles_batch(
 if __name__ == "__main__":
     _sample = ["NVDA", "TSM", "AAPL"]
 
-    print("第一輪：首次抓取（若已存在未過期快取則秒讀）…")
+    print("Round 1: first fetch (an unexpired cache returns immediately)...")
     t_round1 = time.time()
     for x in _sample:
         t0 = time.time()
         r1 = get_profile(x, force_refresh=False)
-        print(f"  {x} 用時 {time.time() - t0:.1f}s，sources={r1.get('sources_used')}")
-        print(f"  簡介摘錄: {str(r1.get('description_short', ''))[:150]}")
+        print(f"  {x} took {time.time() - t0:.1f}s, sources={r1.get('sources_used')}")
+        print(f"  excerpt: {str(r1.get('description_short', ''))[:150]}")
         for a in (r1.get("articles") or [])[:3]:
             print(f"  · {a.get('title')}: {a.get('url')[:70]}…")
 
-    print(f"\n第一輪合計: {time.time() - t_round1:.1f}s")
+    print(f"\nRound 1 total: {time.time() - t_round1:.1f}s")
 
-    print("\n第二輪：應全走 90 天快取，秒完…")
+    print("\nRound 2: should all hit the 90-day cache...")
     t_round2 = time.time()
     for x in _sample:
         t0 = time.time()
         r2 = get_profile(x, force_refresh=False)
-        print(f"  {x} 用時 {time.time() - t0:.3f}s, fetched_at={r2.get('fetched_at')}")
-        print(f"  摘要: {str(r2.get('description_short', '無'))[:120]}")
+        print(f"  {x} took {time.time() - t0:.3f}s, fetched_at={r2.get('fetched_at')}")
+        print(f"  summary: {str(r2.get('description_short', 'none'))[:120]}")
 
-    print(f"\n第二輪三檔合計: {time.time() - t_round2:.2f}s (應遠小於首輪)")
+    print(f"\nRound 2 total for 3 names: {time.time() - t_round2:.2f}s (should be much faster than round 1)")

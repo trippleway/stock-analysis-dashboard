@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-使用 FinBERT 進行新聞情緒分析（含每日快取）。
+FinBERT news-sentiment analysis, with a same-day cache.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/sentiment.py
 """
 
@@ -17,10 +17,10 @@ from typing import Any
 
 from tqdm import tqdm
 
-# 抑制 transformers 訊息
+# Quiet transformers logs
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
-# 從專案根目錄載入 config（直接執行本檔時 sys.path 預設為 src/）
+# Load config from the project root (running this file directly puts src/ on sys.path)
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -44,10 +44,10 @@ if not _log.handlers:
 
 
 def _get_classifier():
-    """延遲初始化 FinBERT。"""
+    """Load FinBERT on first use."""
     global _classifier
     if _classifier is None:
-        print("[sentiment] 首次使用，正在載入 FinBERT 模型...")
+        print("[sentiment] First use: loading the FinBERT model...")
         from transformers import pipeline
 
         _classifier = pipeline(
@@ -55,12 +55,12 @@ def _get_classifier():
             model="ProsusAI/finbert",
             device=-1,
         )
-        print("[sentiment] 模型載入完成")
+        print("[sentiment] Model loaded")
     return _classifier
 
 
 def _cache_path(ticker: str) -> Path:
-    """回傳當日情緒快取檔案路徑。"""
+    """Path of today's sentiment cache file."""
     d = datetime.now().strftime("%Y-%m-%d")
     p = Path(CACHE_DIR) / d / "sentiment"
     p.mkdir(parents=True, exist_ok=True)
@@ -68,7 +68,7 @@ def _cache_path(ticker: str) -> Path:
 
 
 def _parse_published_at(value: Any) -> datetime | None:
-    """解析 published_at（YYYY-MM-DD HH:MM:SS 等格式）到 datetime。"""
+    """Parse published_at (YYYY-MM-DD HH:MM:SS and similar) into a datetime."""
     if value is None:
         return None
     try:
@@ -76,7 +76,7 @@ def _parse_published_at(value: Any) -> datetime | None:
             v = value.strip()
             if not v:
                 return None
-            # 優先解析 fetcher 統一輸出格式
+            # Prefer the fetcher's unified timestamp format
             try:
                 dt = datetime.strptime(v, "%Y-%m-%d %H:%M:%S")
             except ValueError:
@@ -92,7 +92,7 @@ def _parse_published_at(value: Any) -> datetime | None:
 
 
 def _time_weight(days_ago: float) -> float:
-    """依新聞距今時間回傳衰減權重。"""
+    """Decay weight from how many days ago the article was published."""
     if days_ago <= 1:
         return 1.0
     if days_ago <= 3:
@@ -103,16 +103,16 @@ def _time_weight(days_ago: float) -> float:
 
 
 def _label_cn(label: str) -> str:
-    """英文情緒標籤轉中文。"""
+    """Map a FinBERT label to the per-article display word."""
     if label == "positive":
-        return "正面"
+        return "Positive"
     if label == "negative":
-        return "負面"
-    return "中性"
+        return "Negative"
+    return "Neutral"
 
 
 def _sentiment_label(score: float) -> str:
-    """總體情緒分數轉中文描述。"""
+    """Map the aggregate sentiment score to the overall label."""
     if score > 0.5:
         return "強烈看漲"
     if score > 0.2:
@@ -126,12 +126,12 @@ def _sentiment_label(score: float) -> str:
 
 def generate_news_summary(sentiment_result: dict[str, Any], ticker: str) -> str:
     """
-    模板版新聞摘要（無 LLM 或離線時使用）。
-    依情緒分數、標籤與新聞標題組成簡短繁體中文說明。
+    Template news summary, used when there is no LLM or the call fails.
+    Built from the sentiment score, the label, and recent headlines.
     """
     sym = str(ticker).upper()
     if int(sentiment_result.get("news_count", 0) or 0) == 0:
-        return "近期無相關新聞，建議以基本面和技術面為主要判斷依據。"
+        return "No recent news. Use fundamentals and technicals as the main inputs."
 
     label = str(sentiment_result.get("sentiment_label", "中性"))
     score = float(sentiment_result.get("sentiment_score", 0) or 0)
@@ -149,12 +149,13 @@ def generate_news_summary(sentiment_result: dict[str, Any], ticker: str) -> str:
 
     title_part = ""
     if titles:
-        title_part = "近期標題包含「" + "」「".join(titles) + "」等。"
+        title_part = " Recent headlines include " + "; ".join(titles) + "."
 
     return (
-        f"{sym} 近一週共 {n} 則新聞，整體情緒為「{label}」（情緒分數 {score:+.2f}）。"
-        f"新聞分佈為正面 {pos} 則、中性 {neu} 則、負面 {neg} 則。{title_part}"
-        f"建議搭配基本面與技術面綜合評估，並留意單則新聞可能造成的短期波動。"
+        f"{sym} has {n} articles in the recent window. Overall sentiment is \"{label}\" "
+        f"(score {score:+.2f}). "
+        f"Breakdown: {pos} positive, {neu} neutral, {neg} negative.{title_part} "
+        f"Read this together with fundamentals and technicals. A single article can move the stock in the short term."
     )
 
 
@@ -163,25 +164,25 @@ def generate_news_summary_with_llm(
     ticker: str,
     company_name: str = "",
 ) -> str:
-    """使用 Claude Haiku 4.5 生成中文新聞摘要。失敗時 fallback 到模板版。"""
+    """Ask Claude Haiku 4.5 for an English news summary. Fall back to the template on failure."""
 
-    # 無新聞直接回傳
+    # No articles: return immediately
     if int(sentiment_result.get("news_count", 0) or 0) == 0:
-        return "近期無相關新聞，建議以基本面和技術面為主要判斷依據。"
+        return "No recent news. Use fundamentals and technicals as the main inputs."
 
-    # 無 API key 用模板版
+    # No API key: use the template
     key = (ANTHROPIC_API_KEY or "").strip()
     if not key:
         return generate_news_summary(sentiment_result, ticker)
 
-    # 檢查當日快取
+    # Same-day cache
     cache_dir = Path(CACHE_DIR) / datetime.now().strftime("%Y-%m-%d") / "summaries"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / f"{ticker.upper()}.txt"
     if cache_file.is_file():
         return cache_file.read_text(encoding="utf-8")
 
-    # 組裝新聞清單
+    # Build the article list
     news_lines: list[str] = []
     analyzed = sentiment_result.get("analyzed_news", [])
     if not isinstance(analyzed, list):
@@ -189,7 +190,7 @@ def generate_news_summary_with_llm(
     for news in analyzed[:10]:
         if not isinstance(news, dict):
             continue
-        sent_cn = str(news.get("sentiment_cn", "中性") or "中性")
+        sent_cn = str(news.get("sentiment_cn", "Neutral") or "Neutral")
         try:
             conf = float(news.get("confidence", 0) or 0)
         except (TypeError, ValueError):
@@ -199,40 +200,40 @@ def generate_news_summary_with_llm(
         pat = str(news.get("published_at", "") or "")
         date_short = pat[:10] if len(pat) >= 10 else pat
         news_lines.append(
-            f"- [{sent_cn}，信心 {conf:.2f}] {title} ({pub}, {date_short})"
+            f"- [{sent_cn}, confidence {conf:.2f}] {title} ({pub}, {date_short})"
         )
-    news_text = "\n".join(news_lines) if news_lines else "（無可列舉標題）"
+    news_text = "\n".join(news_lines) if news_lines else "(no headlines to list)"
 
-    system_prompt = """你是一位專業的金融新聞分析師，擅長將多則新聞整合成簡潔有洞察力的投資觀察。
+    system_prompt = """You are a financial news analyst. You turn a set of articles into a short, useful investment note.
 
-請根據提供的新聞清單與情緒分析結果，生成一段 150-200 字的中文新聞概覽。
+Using the article list and the sentiment results, write an English news overview of about 150-200 words.
 
-格式要求：
-- 第一段：簡述整體情緒傾向與新聞數量
-- 第二段：若有正面消息，用一段話綜合 2-3 個主題（不要條列標題）
-- 第三段：若有負面消息或風險點，用一段話說明
-- 結尾：給出中性的投資觀察
+Format:
+- First paragraph: overall sentiment and how many articles there are
+- Second paragraph: if there is positive news, combine two or three themes in prose (do not list headlines)
+- Third paragraph: if there is negative news or a risk, explain it in one paragraph
+- Close with a neutral observation
 
-語氣要求：
-- 繁體中文
-- 專業但易讀
-- 避免「應該買進」「強力推薦」這類建議
-- 用「可關注」「值得留意」等中性詞彙
-- 不要虛構未出現在新聞中的資訊
+Tone:
+- English
+- Professional and easy to read
+- Do not say "buy" or "strong buy"
+- Use neutral wording such as "worth watching"
+- Do not invent facts that are not in the articles
 
-長度 150-250 字，用空行分段。"""
+About 150-250 words, with blank lines between paragraphs."""
 
     sym = ticker.upper()
     name_part = f" ({company_name})" if company_name else ""
-    user_message = f"""股票：{sym}{name_part}
+    user_message = f"""Stock: {sym}{name_part}
 
-整體情緒分數：{float(sentiment_result.get('sentiment_score', 0) or 0):+.2f}（{sentiment_result.get('sentiment_label', '中性')}）
-新聞統計：正面 {int(sentiment_result.get('positive_count', 0) or 0)} 則 / 中性 {int(sentiment_result.get('neutral_count', 0) or 0)} 則 / 負面 {int(sentiment_result.get('negative_count', 0) or 0)} 則
+Overall sentiment score: {float(sentiment_result.get('sentiment_score', 0) or 0):+.2f} ({sentiment_result.get('sentiment_label', '中性')})
+Article counts: positive {int(sentiment_result.get('positive_count', 0) or 0)} / neutral {int(sentiment_result.get('neutral_count', 0) or 0)} / negative {int(sentiment_result.get('negative_count', 0) or 0)}
 
-新聞清單（按影響力排序）：
+Articles, ordered by impact:
 {news_text}
 
-請生成新聞概覽。"""
+Write the news overview."""
 
     if anthropic is None:
         return generate_news_summary(sentiment_result, ticker)
@@ -252,13 +253,13 @@ def generate_news_summary_with_llm(
         return summary
 
     except Exception as e:  # noqa: BLE001
-        _log.warning("%s LLM 摘要生成失敗: %s", sym, e)
+        _log.warning("%s LLM summary failed: %s", sym, e)
         return "[離線摘要] " + generate_news_summary(sentiment_result, ticker)
 
 
 def analyze_news_sentiment(news_items: list[dict[str, Any]]) -> dict[str, Any]:
     """
-    對新聞標題做 FinBERT 情緒分析，輸出整體分數與逐條結果。
+    Score news headlines with FinBERT and return the aggregate plus each article.
     """
     if not news_items:
         return {
@@ -285,7 +286,7 @@ def analyze_news_sentiment(news_items: list[dict[str, Any]]) -> dict[str, Any]:
 
     for item in news_items:
         title = str(item.get("title", "") or "")
-        title_for_model = title[:256]  # BERT 輸入長度控制
+        title_for_model = title[:256]  # Keep the BERT input within its length limit
         link = str(item.get("link", "") or "")
         publisher = str(item.get("publisher", "") or "")
         published_at = str(item.get("published_at", "") or "")
@@ -294,7 +295,7 @@ def analyze_news_sentiment(news_items: list[dict[str, Any]]) -> dict[str, Any]:
         days_ago = (now_utc - dt).total_seconds() / 86400.0 if dt else 99.0
         w = _time_weight(days_ago)
 
-        # 單則分析保護，失敗視為 neutral
+        # If one headline fails, treat it as neutral
         label = "neutral"
         conf = 0.0
         try:
@@ -361,7 +362,7 @@ def analyze_news_sentiment(news_items: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _empty_sentiment_result(ticker: str, label: str = "無新聞") -> dict[str, Any]:
-    """無新聞或失敗時的預設回傳。"""
+    """Default result when there is no news or the analysis fails."""
     return {
         "ticker": ticker.upper(),
         "score": 50.0,
@@ -378,7 +379,7 @@ def _empty_sentiment_result(ticker: str, label: str = "無新聞") -> dict[str, 
 
 def analyze_ticker_sentiment(ticker: str, max_items: int = 10) -> dict[str, Any]:
     """
-    整合新聞抓取與 FinBERT 分析（含當日快取）。
+    Fetch news and run FinBERT, using the same-day cache.
     """
     sym = ticker.upper()
     cache = _cache_path(sym)
@@ -416,39 +417,39 @@ def analyze_ticker_sentiment(ticker: str, max_items: int = 10) -> dict[str, Any]
 
 def analyze_sentiment_batch(tickers: list[str], max_per_ticker: int = 8) -> dict[str, dict[str, Any]]:
     """
-    批量情緒分析（失敗股票以預設值補上）。
+    Score many tickers. A failure is filled with the default result.
     """
     out: dict[str, dict[str, Any]] = {}
-    for t in tqdm([str(x).upper() for x in tickers], desc="情緒分析", unit="檔"):
+    for t in tqdm([str(x).upper() for x in tickers], desc="Sentiment", unit="name"):
         try:
             out[t] = analyze_ticker_sentiment(t, max_items=max_per_ticker)
         except Exception as e:  # noqa: BLE001
-            _log.error("%s 情緒分析失敗：%s", t, e)
-            fail = _empty_sentiment_result(t, label="分析失敗")
+            _log.error("%s sentiment analysis failed: %s", t, e)
+            fail = _empty_sentiment_result(t, label="Analysis failed")
             fail["summary"] = generate_news_summary_with_llm(fail, t)
             out[t] = fail
     return out
 
 
 if __name__ == "__main__":
-    print("FinBERT 模型下載約需 5 分鐘")
+    print("Downloading the FinBERT model can take about 5 minutes")
     sample = ["NVDA", "TSM"]
     results = analyze_sentiment_batch(sample, max_per_ticker=10)
     for t in sample:
         r = results.get(t, _empty_sentiment_result(t))
         print(f"\n=== {t} ===")
-        print(f"情緒分數: {r['sentiment_score']:.4f} | 標籤: {r['sentiment_label']} | score: {r['score']}")
+        print(f"Sentiment score: {r['sentiment_score']:.4f} | label: {r['sentiment_label']} | score: {r['score']}")
         print(
-            f"新聞統計: 正面 {r['positive_count']} / 中性 {r['neutral_count']} / 負面 {r['negative_count']} "
-            f"(共 {r['news_count']} 則)"
+            f"Articles: positive {r['positive_count']} / neutral {r['neutral_count']} / negative {r['negative_count']} "
+            f"({r['news_count']} total)"
         )
-        print("Top 3 影響新聞:")
+        print("Top 3 articles by impact:")
         for n in r.get("top_headlines", [])[:3]:
             print(
                 f"- {n.get('title','')}\n"
-                f"  情緒: {n.get('sentiment_cn')} ({n.get('sentiment')}) | "
-                f"信心: {n.get('confidence')} | 連結: {n.get('link')}"
+                f"  sentiment: {n.get('sentiment_cn')} ({n.get('sentiment')}) | "
+                f"confidence: {n.get('confidence')} | link: {n.get('link')}"
             )
-        print("\n📊 LLM 新聞摘要：")
-        print(r.get("summary", "無摘要"))
-        print("─" * 60)
+        print("\nLLM news summary:")
+        print(r.get("summary", "No summary"))
+        print("-" * 60)

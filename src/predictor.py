@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-股價預測模組：使用 Prophet 預測未來 30 天價格，失敗時回退線性外推。
+Price forecast: Prophet for the next 30 days, with a linear extrapolation fallback.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/predictor.py
 """
 
@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-# 從專案根目錄載入 config（直接執行本檔時 sys.path 預設為 src/）
+# Load config from the project root (sys.path defaults to src/ when this file is run directly).
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -44,7 +44,7 @@ if not _LOG.handlers:
 
 @contextmanager
 def _suppress_stdout_stderr():
-    """暫時抑制 stdout/stderr（降低 Prophet/cmdstanpy 訓練輸出噪音）。"""
+    """Temporarily silence stdout and stderr so Prophet and cmdstanpy training output is quieter."""
     devnull = open(os.devnull, "w", encoding="utf-8")
     old_out = sys.stdout
     old_err = sys.stderr
@@ -60,12 +60,12 @@ def _suppress_stdout_stderr():
 
 def _prediction_confidence(pred: float, low: float, high: float) -> tuple[str, float]:
     """
-    依區間寬度回傳信心度。
+    Return a confidence label from the interval width.
 
-    區間寬度 = (predicted_high - predicted_low) / predicted_30d
-    - < 15%: high
-    - 15% ~ 30%: medium
-    - > 30%: low
+    Width = (predicted_high - predicted_low) / predicted_30d
+    - below 15%: high
+    - 15% to 30%: medium
+    - above 30%: low
     """
     if pred <= 0:
         return "low", 1.0
@@ -79,13 +79,13 @@ def _prediction_confidence(pred: float, low: float, high: float) -> tuple[str, f
 
 def _prediction_score(expected_return_pct: float, confidence: str) -> int:
     """
-    預測吸引力分數。
+    Prediction attractiveness score.
 
-    - 預期報酬 > +10% 且 high 可信度：90
-    - 預期報酬 > +5%：75
-    - 預期報酬 0% ~ +5%：60
-    - 預期報酬 -5% ~ 0%：45
-    - 預期報酬 < -5%：25
+    - Expected return above +10% and high confidence: 90
+    - Expected return above +5%: 75
+    - Expected return from 0% to +5%: 60
+    - Expected return from -5% to 0%: 45
+    - Expected return below -5%: 25
     """
     if expected_return_pct > 10 and confidence == "high":
         return 90
@@ -99,29 +99,29 @@ def _prediction_score(expected_return_pct: float, confidence: str) -> int:
 
 
 def _prepare_close_series(price_history: pd.DataFrame) -> pd.Series:
-    """取最近 history_days 的 Close，轉成乾淨時間序列。"""
+    """Take the most recent history_days of Close and turn them into a clean time series."""
     if "Close" not in price_history.columns:
-        raise ValueError("price_history 缺少 Close 欄位")
+        raise ValueError("price_history is missing the Close column")
     history_days = int(PREDICTION_PARAMS.get("history_days", 365))
     s = pd.to_numeric(price_history["Close"], errors="coerce").dropna()
     if s.empty:
-        raise ValueError("Close 資料為空")
+        raise ValueError("Close data is empty")
     s = s.sort_index().tail(history_days)
     return s
 
 
 def _prophet_predict(close: pd.Series) -> tuple[pd.DataFrame, str]:
-    """使用 Prophet 產生未來 forecast_days 個交易日預測。"""
+    """Use Prophet to forecast the next forecast_days trading days."""
     if not _PROPHET_AVAILABLE:
-        raise RuntimeError("Prophet 未安裝或匯入失敗")
+        raise RuntimeError("Prophet is not installed or failed to import")
     if len(close) < 80:
-        raise ValueError("Prophet 訓練資料不足（至少約 80 筆）")
+        raise ValueError("Not enough data to train Prophet (about 80 rows minimum)")
 
     interval = float(PREDICTION_PARAMS.get("confidence_interval", 0.95))
     cp_prior = float(PREDICTION_PARAMS.get("prophet_changepoint_prior", 0.05))
     forecast_days = int(PREDICTION_PARAMS.get("forecast_days", 30))
 
-    # Prophet 格式：ds / y，且 ds 去除時區
+    # Prophet format: ds / y, and ds has no timezone.
     ds = pd.to_datetime(close.index)
     if isinstance(ds, pd.DatetimeIndex) and ds.tz is not None:
         ds = ds.tz_localize(None)
@@ -139,7 +139,7 @@ def _prophet_predict(close: pd.Series) -> tuple[pd.DataFrame, str]:
 
     with _suppress_stdout_stderr():
         model.fit(train)
-        # 使用日曆日先往後推，再濾掉週末，取得 30 個交易日
+        # Step forward by calendar days, then drop weekends, to get 30 trading days.
         future = model.make_future_dataframe(periods=forecast_days * 2, freq="D", include_history=False)
         future = future[future["ds"].dt.weekday < 5].head(forecast_days)
         fc = model.predict(future)
@@ -149,11 +149,11 @@ def _prophet_predict(close: pd.Series) -> tuple[pd.DataFrame, str]:
 
 
 def _linear_predict(close: pd.Series) -> tuple[pd.DataFrame, str]:
-    """線性外推備援法：用最近 60 天做回歸並外推 30 天。"""
+    """Linear fallback: regress the last 60 days and extrapolate 30 days."""
     forecast_days = int(PREDICTION_PARAMS.get("forecast_days", 30))
     sample = close.tail(60)
     if len(sample) < 20:
-        raise ValueError("線性回歸資料不足（至少 20 筆）")
+        raise ValueError("Not enough data for the linear regression (20 rows minimum)")
 
     y = sample.values.astype(float)
     x = np.arange(len(y), dtype=float)
@@ -182,18 +182,18 @@ def _linear_predict(close: pd.Series) -> tuple[pd.DataFrame, str]:
 
 def predict_price(ticker: str, price_history: pd.DataFrame) -> dict[str, Any]:
     """
-    預測單一股票未來 30 天價格。
+    Forecast the next 30 days for one stock.
 
-    流程：
-    1) 優先使用 Prophet（含 US 假日，週末不預測）
-    2) Prophet 失敗則回退線性外推
+    Steps:
+    1) Prefer Prophet (US holidays, no weekend forecasts)
+    2) If Prophet fails, fall back to linear extrapolation
 
-    參數:
-        ticker: 股票代號。
-        price_history: OHLCV DataFrame，index 為日期，需含 Close 欄位。
+    Args:
+        ticker: Ticker symbol.
+        price_history: OHLCV DataFrame with a date index and a Close column.
 
-    回傳:
-        含當前價、30 日預測價、信賴區間、預測序列、模型來源、信心度與評分。
+    Returns:
+        Current price, 30-day forecast, confidence interval, forecast series, model source, confidence, and score.
     """
     sym = ticker.strip().upper()
     close = _prepare_close_series(price_history)
@@ -203,11 +203,11 @@ def predict_price(ticker: str, price_history: pd.DataFrame) -> dict[str, Any]:
     try:
         pred_df, model_used = _prophet_predict(close)
     except Exception as e:
-        _LOG.warning("%s Prophet 失敗，改用線性法：%s", sym, e)
+        _LOG.warning("%s Prophet failed, switching to the linear method: %s", sym, e)
         pred_df, model_used = _linear_predict(close)
 
     if pred_df.empty:
-        raise ValueError(f"{sym} 無可用預測結果")
+        raise ValueError(f"{sym} has no usable forecast")
 
     pred_df = pred_df.sort_values("ds").reset_index(drop=True)
     last = pred_df.iloc[-1]
@@ -239,13 +239,13 @@ def predict_price(ticker: str, price_history: pd.DataFrame) -> dict[str, Any]:
 
 def predict_batch(all_data: dict[str, Any]) -> list[dict[str, Any]]:
     """
-    批量預測並依 expected_return_pct 由高到低排序。
+    Forecast a batch and sort by expected_return_pct, high to low.
 
-    參數:
-        all_data: collect_all_stocks() 回傳字典，value 需含 price_history。
+    Args:
+        all_data: The dict returned by collect_all_stocks(). Each value needs price_history.
 
-    回傳:
-        預測結果列表；個別失敗會略過並記錄 log。
+    Returns:
+        A list of forecast results. A single failure is skipped and logged.
     """
     rows: list[dict[str, Any]] = []
     for key, payload in all_data.items():
@@ -258,18 +258,18 @@ def predict_batch(all_data: dict[str, Any]) -> list[dict[str, Any]]:
         try:
             rows.append(predict_price(sym, ph))
         except Exception as e:
-            _LOG.error("%s 預測失敗：%s", sym, e)
+            _LOG.error("Forecast failed for %s: %s", sym, e)
     rows.sort(key=lambda x: x.get("expected_return_pct", float("-inf")), reverse=True)
     return rows
 
 
 def _fmt(x: float) -> str:
-    """價格格式化。"""
+    """Format a price."""
     return f"{x:.2f}"
 
 
 def _print_table(rows: list[dict[str, Any]]) -> None:
-    """格式化輸出預測摘要。"""
+    """Print a formatted forecast summary."""
     headers = ("ticker", "current", "pred_30d", "ret%", "model", "conf", "score")
     widths = (8, 10, 10, 8, 10, 8, 6)
     line = " ".join(h.ljust(w) for h, w in zip(headers, widths, strict=True))
@@ -303,14 +303,14 @@ if __name__ == "__main__":
     for t in tickers:
         raw = fetch_stock_data(t, force_refresh=False)
         if not raw or not isinstance(raw.get("price_history"), pd.DataFrame):
-            print(f"[{t}] 無可用歷史資料，跳過。")
+            print(f"[{t}] No usable history, skipping.")
             continue
         try:
             results.append(predict_price(t, raw["price_history"]))
         except Exception as e:
-            print(f"[{t}] 預測失敗：{e}")
+            print(f"[{t}] Forecast failed: {e}")
 
     results.sort(key=lambda x: x["expected_return_pct"], reverse=True)
-    print("\n=== 未來 30 天股價預測 ===")
+    print("\n=== 30-day price forecast ===")
     _print_table(results)
-    print("\n本預測僅供參考，不構成投資建議")
+    print("\nThis forecast is for reference only and is not investment advice")

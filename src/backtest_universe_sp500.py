@@ -1,34 +1,35 @@
 # -*- coding: utf-8 -*-
 """
-回測用 S&P 500 時點股票池。涵蓋 NYSE 與 NASDAQ，對應「美國主流大型股」母體。
+Point-in-time S&P 500 universe for backtests. It covers NYSE and NASDAQ, the universe of mainstream large US stocks.
 
-與 backtest_universe.py（NASDAQ-100）平行，不取代那份模組。
-今天手動挑的 60 檔有不少根本不在 NASDAQ 上市，NASDAQ-100 從一開始就不是合適基準。
+It sits beside backtest_universe.py (NASDAQ-100) and does not replace that module.
+Many of today's hand-picked 60 names are not listed on NASDAQ, so NASDAQ-100 was never the right benchmark.
 
-資料來源
---------
-GitHub fja05680/sp500（MIT）。執行時先列 repo 檔案，優先用檔名帶日期、
-且日期最新的「Historical Components」CSV；目前 repo 沒有這種檔名，
-因此使用 README 指定的最新歷史檔：
+Data source
+-----------
+GitHub fja05680/sp500 (MIT). At runtime the repo file list is read first. A
+"Historical Components" CSV whose filename carries a date is preferred, and the
+newest such date wins. The repo currently has no filename of that form, so the
+latest history file named in the README is used:
 
     S&P 500 Historical Components & Changes (Updated).csv
 
-原始檔是逐行 ``date,tickers``，tickers 為當天全部成分股、逗號分隔、整欄加引號。
-不是每個交易日都有一列，而是指數調整發生時才記一筆完整名單。
+The raw file is one ``date,tickers`` row at a time. tickers is every constituent
+that day, comma-separated, and the whole field is quoted. There is not a row for
+every trading day. A full list is recorded when the index is reconstituted.
 
-已知限制（作者 README 自己寫的，這不是無誤差的權威資料）
---------------------------------------------------------
-- 底稿來自 Andreas Clenow《Trading Evolved》附檔（1996–2019），其後由作者
-  對照 Wikipedia「Selected Changes」手工補上。Wikipedia 那一節不是完整變更清單，
-  日期與事件可能缺漏。
-- 1996 年起前幾年一列往往少於 500 檔（最早約 487）。作者認為大約 2001 年以前
-  可能有缺符號，無法獨立核對。
-- 新增與剔除的空窗會讓檔數不是剛好 500，有時略多（例如 505）、有時略少。
-- 代號是當天實際交易代號。改名（FB 與 META）不會自動視為同一家公司。
-- 檔案最後一列之後的調整還沒被收進來。查詢日晚於最後一列時，只能沿用該列，
-  不能假裝已經涵蓋到今天。
+Known limits (the author's own README; this is not an error-free official source)
+---------------------------------------------------------------------------------
+- The base file is the appendix of Andreas Clenow's Trading Evolved (1996-2019).
+  The author then filled later changes by hand from Wikipedia "Selected Changes".
+  That Wikipedia section is not a complete change list, so dates and events can be missing.
+- The first years from 1996 often have fewer than 500 names in a row (about 487 at the start).
+  The author thinks symbols may be missing before about 2001 and cannot be checked independently.
+- Gaps between additions and deletions mean the count is not exactly 500. It is sometimes a bit high (for example 505) and sometimes a bit low.
+- Symbols are the ticker that actually traded that day. A rename (FB and META) is not treated as the same company automatically.
+- Changes after the last row of the file are not included. A query date after the last row can only reuse that row. It cannot pretend the file covers today.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/backtest_universe_sp500.py
 """
 
@@ -66,7 +67,7 @@ if not _log.handlers:
 
 _REPO_API = "https://api.github.com/repos/fja05680/sp500/contents/"
 _RAW_BASE = "https://raw.githubusercontent.com/fja05680/sp500/master/"
-# README 指定的維護中歷史檔。repo 沒有「檔名帶更新日期」時用這份。
+# The maintained history file named in the README. Used when the repo has no filename that carries an update date.
 _UPDATED_FILENAME = "S&P 500 Historical Components & Changes (Updated).csv"
 _CACHE_DIR = Path(DATA_DIR) / "backtest_cache"
 _CACHE_CSV = _CACHE_DIR / "sp500_historical.csv"
@@ -77,7 +78,7 @@ _HTTP_RETRY_DELAYS = (1.0, 2.0, 4.0)
 _YF_CALL_SLEEP_SEC = 0.7
 _YF_RETRY_DELAYS = (1.0, 2.0, 4.0)
 
-# 季度取樣對齊季初，與 NASDAQ-100 模組同一套時點。
+# Quarterly samples align to the start of the quarter, the same dates as the NASDAQ-100 module.
 _FREQ_TO_PANDAS: dict[str, str] = {
     "quarterly": "QS",
     "monthly": "MS",
@@ -85,9 +86,9 @@ _FREQ_TO_PANDAS: dict[str, str] = {
     "daily": "D",
 }
 
-# yfinance info["country"] 視為美國公司的寫法。
+# Spellings of yfinance info["country"] that count as a US company.
 _US_COUNTRIES = frozenset({"UNITED STATES", "USA", "US", "U.S.", "U.S.A."})
-# 檔名裡的 (MM-DD-YYYY)，例如 Changes(08-01-2026).csv。
+# (MM-DD-YYYY) inside a filename, for example Changes(08-01-2026).csv.
 _FILENAME_DATE = re.compile(r"\((\d{2})-(\d{2})-(\d{4})\)")
 
 _HISTORY: pd.DataFrame | None = None
@@ -95,19 +96,19 @@ _STALE_WARNED = False
 
 
 class UniverseCoverageError(RuntimeError):
-    """查詢日早於 S&P 500 歷史檔起點，或該筆快照是空的。"""
+    """The query date is before the start of the S&P 500 history file, or that snapshot is empty."""
 
 
 def _coerce_date(value: date | datetime | str, name: str) -> date:
     """
-    把 date / datetime / ISO 字串轉成 date。
+    Turn a date, datetime, or ISO string into a date.
 
-    參數:
-        value: 日期輸入。
-        name: 參數名稱，用於錯誤訊息。
+    Args:
+        value: Date input.
+        name: Parameter name, used in the error message.
 
-    回傳:
-        datetime.date。
+    Returns:
+        datetime.date.
     """
     if isinstance(value, datetime):
         return value.date()
@@ -118,28 +119,28 @@ def _coerce_date(value: date | datetime | str, name: str) -> date:
         try:
             return date.fromisoformat(text[:10])
         except ValueError as exc:
-            raise ValueError(f"{name} 不是合法日期：{value!r}，請用 YYYY-MM-DD") from exc
-    raise TypeError(f"{name} 須為 date，收到 {type(value).__name__}")
+            raise ValueError(f"{name} is not a valid date: {value!r}. Use YYYY-MM-DD") from exc
+    raise TypeError(f"{name} must be a date, got {type(value).__name__}")
 
 
 def _validate_range(start: date, end: date) -> None:
-    """起始日不可晚於結束日。"""
+    """The start date cannot be after the end date."""
     if start > end:
         raise ValueError(
-            f"start_date ({start.isoformat()}) 晚於 end_date ({end.isoformat()})"
+            f"start_date ({start.isoformat()}) is after end_date ({end.isoformat()})"
         )
 
 
 def _http_get(url: str, *, as_json: bool = False) -> bytes | list | dict:
     """
-    GET 一個 URL，失敗重試 3 次。
+    GET one URL. Retry 3 times on failure.
 
-    參數:
-        url: 完整網址。
-        as_json: True 時回傳解析後的 JSON。
+    Args:
+        url: Full URL.
+        as_json: When True, return the parsed JSON.
 
-    回傳:
-        回應本文，或 JSON 物件。
+    Returns:
+        The response body, or a JSON object.
     """
     last_err: Exception | None = None
     headers = {"User-Agent": "stock-analysis-backtest", "Accept": "application/vnd.github+json"}
@@ -150,23 +151,23 @@ def _http_get(url: str, *, as_json: bool = False) -> bytes | list | dict:
             if as_json:
                 return resp.json()
             return resp.content
-        except Exception as exc:  # noqa: BLE001 — 網路失敗改重試
+        except Exception as exc:  # noqa: BLE001 — a network failure is retried
             last_err = exc
-            _log.warning("下載失敗第 %s 次 %s: %s", attempt + 1, url, exc)
+            _log.warning("Download failed, attempt %s, %s: %s", attempt + 1, url, exc)
             if attempt < 2:
                 time.sleep(_HTTP_RETRY_DELAYS[attempt])
-    raise RuntimeError(f"下載失敗（已重試 3 次）：{url}。{last_err}") from last_err
+    raise RuntimeError(f"Download failed after 3 attempts: {url}. {last_err}") from last_err
 
 
 def _filename_stamp(name: str) -> date | None:
     """
-    從檔名取出 (MM-DD-YYYY)。沒有日期則回傳 None。
+    Pull (MM-DD-YYYY) out of a filename. Returns None when there is no date.
 
-    參數:
-        name: repo 裡的檔名。
+    Args:
+        name: Filename inside the repo.
 
-    回傳:
-        檔名上的日期，或 None。
+    Returns:
+        The date in the filename, or None.
     """
     match = _FILENAME_DATE.search(name)
     if match is None:
@@ -179,24 +180,24 @@ def _filename_stamp(name: str) -> date | None:
 
 
 def _raw_url(filename: str) -> str:
-    """把 repo 檔名轉成 raw.githubusercontent.com 網址。"""
+    """Turn a repo filename into a raw.githubusercontent.com URL."""
     return _RAW_BASE + quote(filename)
 
 
 def _resolve_remote_file() -> tuple[str, str]:
     """
-    列出 fja05680/sp500 的檔案，決定要下載哪一份歷史成分股 CSV。
+    List files in fja05680/sp500 and decide which historical-constituents CSV to download.
 
-    優先順序：檔名帶日期、且日期最新的 Historical Components CSV；
-    沒有這種檔時，用 README 指定的 ``(Updated)`` 檔。
-    列出檔案失敗會直接拋錯，不靜默改抓過期網址。
+    Preference: the Historical Components CSV whose filename carries a date, and among those the newest date.
+    When no such file exists, use the ``(Updated)`` file named in the README.
+    A failure to list files is raised. An expired URL is not fetched silently.
 
-    回傳:
-        (檔名, raw URL)。
+    Returns:
+        (filename, raw URL).
     """
     payload = _http_get(_REPO_API, as_json=True)
     if not isinstance(payload, list):
-        raise RuntimeError(f"GitHub 檔案列表格式異常：{type(payload).__name__}")
+        raise RuntimeError(f"GitHub file list has an unexpected shape: {type(payload).__name__}")
 
     names = [str(item.get("name") or "") for item in payload if isinstance(item, dict)]
     historical = [
@@ -208,25 +209,25 @@ def _resolve_remote_file() -> tuple[str, str]:
     if dated:
         dated.sort()
         filename = dated[-1][1]
-        _log.info("使用檔名日期最新的歷史成分股檔：%s", filename)
+        _log.info("Using the historical constituents file with the newest filename date: %s", filename)
         return filename, _raw_url(filename)
 
     if _UPDATED_FILENAME in names:
         _log.info(
-            "repo 目前沒有檔名帶日期的 Historical Components CSV，"
-            "改用 README 指定的最新歷史檔：%s",
+            "The repo has no Historical Components CSV whose filename carries a date. "
+            "Using the latest history file named in the README: %s",
             _UPDATED_FILENAME,
         )
         return _UPDATED_FILENAME, _raw_url(_UPDATED_FILENAME)
 
     raise RuntimeError(
-        "在 fja05680/sp500 找不到 S&P 500 歷史成分股 CSV。"
-        f"看到的檔案：{', '.join(names) or '（空）'}"
+        "No S&P 500 historical constituents CSV was found in fja05680/sp500. "
+        f"Files seen: {', '.join(names) or '(empty)'}"
     )
 
 
 def _parse_ticker_cell(value: object) -> set[str]:
-    """把一格逗號分隔的成分股字串拆成大寫代號集合。"""
+    """Split one comma-separated constituents cell into a set of uppercase symbols."""
     if not isinstance(value, str) or not value.strip():
         return set()
     return {part.strip().upper() for part in value.split(",") if part.strip()}
@@ -234,17 +235,17 @@ def _parse_ticker_cell(value: object) -> set[str]:
 
 def _parse_history(path: Path) -> pd.DataFrame:
     """
-    讀取快取 CSV，解析成 date 與 tickers 集合。
+    Read the cached CSV and parse it into dates and ticker sets.
 
-    參數:
-        path: 本地 CSV 路徑。
+    Args:
+        path: Local CSV path.
 
-    回傳:
-        依日期排序的 DataFrame，欄位為 date（Timestamp）與 tickers（set[str]）。
+    Returns:
+        A DataFrame sorted by date, with columns date (Timestamp) and tickers (set[str]).
     """
     raw = pd.read_csv(path)
     if "date" not in raw.columns or "tickers" not in raw.columns:
-        raise ValueError(f"CSV 缺少 date/tickers 欄位，實際欄位：{list(raw.columns)}")
+        raise ValueError(f"CSV is missing the date/tickers columns. Columns found: {list(raw.columns)}")
 
     parsed = pd.DataFrame(
         {
@@ -255,22 +256,22 @@ def _parse_history(path: Path) -> pd.DataFrame:
     parsed = parsed.dropna(subset=["date"])
     parsed = parsed.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
     if parsed.empty:
-        raise ValueError(f"{path} 沒有可用的日期列")
+        raise ValueError(f"{path} has no usable date rows")
 
     sizes = parsed["tickers"].map(len)
     median = float(sizes.median())
     if median < 450:
         raise ValueError(
-            f"成分股數量中位數只有 {median:.0f}，CSV 的 tickers 欄可能沒被當成單一欄位解析"
+            f"The median constituent count is only {median:.0f}. The CSV tickers field may not have been parsed as one column"
         )
     empty_rows = int((sizes == 0).sum())
     if empty_rows:
-        _log.warning("有 %s 列的成分股是空的，這些日期不能當作有效快照", empty_rows)
+        _log.warning("%s rows have an empty constituent list and cannot be used as a valid snapshot", empty_rows)
     return parsed
 
 
 def _read_fetched_at() -> datetime | None:
-    """讀取快取旁的抓取時間。沒有 meta 時改看檔案修改時間。"""
+    """Read the fetch time stored beside the cache. Falls back to the file mtime when there is no meta."""
     if _CACHE_META.is_file():
         try:
             meta = json.loads(_CACHE_META.read_text(encoding="utf-8"))
@@ -278,14 +279,14 @@ def _read_fetched_at() -> datetime | None:
             if text:
                 return datetime.fromisoformat(text)
         except Exception as exc:  # noqa: BLE001
-            _log.warning("讀取快取時間失敗，改看檔案修改時間: %s", exc)
+            _log.warning("Failed to read the cache timestamp, falling back to the file mtime: %s", exc)
     if _CACHE_CSV.is_file():
         return datetime.fromtimestamp(_CACHE_CSV.stat().st_mtime, tz=timezone.utc)
     return None
 
 
 def _cache_is_fresh() -> bool:
-    """本地 CSV 存在，且抓取時間在 7 天以內。"""
+    """The local CSV exists and was fetched within the last 7 days."""
     if not _CACHE_CSV.is_file():
         return False
     fetched = _read_fetched_at()
@@ -298,7 +299,7 @@ def _cache_is_fresh() -> bool:
 
 
 def _write_meta(filename: str, url: str) -> None:
-    """寫下這次抓取的來源與時間，供 7 日快取判斷。"""
+    """Write the source and time of this fetch so the 7-day cache can be checked."""
     meta = {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "source_filename": filename,
@@ -309,13 +310,13 @@ def _write_meta(filename: str, url: str) -> None:
 
 def download_sp500_history() -> pd.DataFrame:
     """
-    下載 S&P 500 歷史成分股，並快取到 data/backtest_cache/sp500_historical.csv。
+    Download the S&P 500 historical constituents and cache them at data/backtest_cache/sp500_historical.csv.
 
-    本地已有、且抓取日期在 7 天以內，就直接讀快取、不再打 GitHub。
-    快取損壞時會重新下載，不沿用解析失敗的檔案。
+    A local file fetched within the last 7 days is read as-is and GitHub is not called.
+    A damaged cache is downloaded again. A file that failed to parse is not reused.
 
-    回傳:
-        DataFrame，欄位 date、tickers（set[str]），一列是一次指數調整後的完整名單。
+    Returns:
+        A DataFrame with columns date and tickers (set[str]). One row is the full list after one index change.
     """
     global _HISTORY
     if _HISTORY is not None:
@@ -326,13 +327,13 @@ def download_sp500_history() -> pd.DataFrame:
         try:
             parsed = _parse_history(_CACHE_CSV)
         except Exception as exc:  # noqa: BLE001
-            _log.warning("本地快取無法解析，改為重新下載: %s", exc)
+            _log.warning("The local cache could not be parsed, so it will be downloaded again: %s", exc)
         else:
             _HISTORY = parsed
             first = parsed["date"].iloc[0].date()
             last = parsed["date"].iloc[-1].date()
             _log.info(
-                "使用 7 日內快取 %s（%s 列，%s ~ %s）",
+                "Using the cache from the last 7 days, %s (%s rows, %s to %s)",
                 _CACHE_CSV.name,
                 len(parsed),
                 first.isoformat(),
@@ -343,7 +344,7 @@ def download_sp500_history() -> pd.DataFrame:
     filename, url = _resolve_remote_file()
     content = _http_get(url)
     if not isinstance(content, (bytes, bytearray)) or not content:
-        raise RuntimeError(f"下載到的內容是空的：{url}")
+        raise RuntimeError(f"The downloaded content is empty: {url}")
     _CACHE_CSV.write_bytes(content)
     _write_meta(filename, url)
     parsed = _parse_history(_CACHE_CSV)
@@ -351,7 +352,7 @@ def download_sp500_history() -> pd.DataFrame:
     first = parsed["date"].iloc[0].date()
     last = parsed["date"].iloc[-1].date()
     _log.info(
-        "已下載 %s → %s（%s 列，%s ~ %s）",
+        "Downloaded %s -> %s (%s rows, %s to %s)",
         filename,
         _CACHE_CSV,
         len(parsed),
@@ -362,19 +363,19 @@ def download_sp500_history() -> pd.DataFrame:
 
 
 def _history_bounds(history: pd.DataFrame) -> tuple[date, date]:
-    """回傳歷史檔第一列與最後一列的日期。"""
+    """Return the dates of the first and last rows in the history file."""
     return history["date"].iloc[0].date(), history["date"].iloc[-1].date()
 
 
 def _warn_if_past_coverage(history: pd.DataFrame, end: date) -> None:
-    """查詢迄日晚於最後一列時提出警告。之後的調整不在檔案裡。同一次執行只警告一次。"""
+    """Warn when the query end date is after the last row. Later changes are not in the file. Warn only once per run."""
     global _STALE_WARNED
     _, last = _history_bounds(history)
     if end > last and not _STALE_WARNED:
         _STALE_WARNED = True
         _log.warning(
-            "S&P 500 來源最後一列是 %s，查詢迄日是 %s。"
-            "這段空窗的成分股異動還沒進檔案，只能沿用最後一筆有效名單。",
+            "The last row of the S&P 500 source is %s and the query end date is %s. "
+            "Constituent changes in that gap are not in the file, so the last valid list is reused.",
             last.isoformat(),
             end.isoformat(),
         )
@@ -382,51 +383,51 @@ def _warn_if_past_coverage(history: pd.DataFrame, end: date) -> None:
 
 def _snapshot_as_of(history: pd.DataFrame, as_of: date) -> set[str]:
     """
-    取「小於等於 as_of 的最近一列」成分股。
+    Take the constituents from the latest row on or before as_of.
 
-    原始資料是事件觸發，不是每天一列。兩次調整之間，沿用前一筆完整名單。
+    The source is event-driven, not one row per day. Between two changes, the previous full list stays in force.
 
-    參數:
-        history: download_sp500_history 的結果。
-        as_of: 查詢日。
+    Args:
+        history: The result of download_sp500_history.
+        as_of: Query date.
 
-    回傳:
-        該日有效的成分股集合。
+    Returns:
+        The set of constituents that were valid on that date.
     """
     position = int(history["date"].searchsorted(pd.Timestamp(as_of), side="right")) - 1
     if position < 0:
         first, _last = _history_bounds(history)
         raise UniverseCoverageError(
-            f"無法取得 {as_of.isoformat()} 的 S&P 500 成分股："
-            f"早於資料起點 {first.isoformat()}。"
+            f"Cannot load S&P 500 constituents for {as_of.isoformat()}: "
+            f"it is before the data start {first.isoformat()}."
         )
     symbols = history["tickers"].iloc[position]
     row_date = history["date"].iloc[position].date()
     if not symbols:
         raise UniverseCoverageError(
-            f"無法取得 {as_of.isoformat()} 的 S&P 500 成分股："
-            f"最近一筆有效列 {row_date.isoformat()} 是空名單。"
+            f"Cannot load S&P 500 constituents for {as_of.isoformat()}: "
+            f"the latest valid row {row_date.isoformat()} is an empty list."
         )
     return set(symbols)
 
 
 def _sample_dates(start: date, end: date, freq: str) -> list[date]:
     """
-    在區間內依頻率產生取樣日。回測起點若不是頻率邊界，仍會納入。
+    Build sample dates inside the range. The backtest start is included even when it is not a frequency boundary.
 
-    參數:
-        start: 區間起日（含）。
-        end: 區間迄日（含）。
-        freq: quarterly / monthly / yearly / daily。
+    Args:
+        start: Range start (inclusive).
+        end: Range end (inclusive).
+        freq: quarterly / monthly / yearly / daily.
 
-    回傳:
-        由早到晚的 date 列表。
+    Returns:
+        A list of dates from earliest to latest.
     """
     key = freq.strip().lower()
     pandas_freq = _FREQ_TO_PANDAS.get(key)
     if pandas_freq is None:
         allowed = ", ".join(_FREQ_TO_PANDAS)
-        raise ValueError(f"不支援的取樣頻率 {freq!r}，請用 {allowed}")
+        raise ValueError(f"Unsupported sample frequency {freq!r}. Use {allowed}")
 
     stamps = pd.date_range(start=start, end=end, freq=pandas_freq)
     dates = [ts.date() for ts in stamps]
@@ -441,7 +442,7 @@ def _sample_dates(start: date, end: date, freq: str) -> list[date]:
             out.append(sample)
     if not out:
         raise ValueError(
-            f"在 {start.isoformat()} 到 {end.isoformat()} 之間沒有取樣日（freq={freq}）"
+            f"No sample dates between {start.isoformat()} and {end.isoformat()} (freq={freq})"
         )
     return out
 
@@ -452,18 +453,18 @@ def get_point_in_time_sp500(
     freq: str = "quarterly",
 ) -> dict[date, set[str]]:
     """
-    依頻率取出每個時點當時的 S&P 500 成分股。
+    Return the S&P 500 constituents that were in force at each sample date.
 
-    每個取樣日使用 CSV 裡小於等於該日的最近一筆完整名單。
-    quarterly 對齊季初，與 NASDAQ-100 模組同一組時點。
+    Each sample date uses the latest full list in the CSV on or before that date.
+    quarterly aligns to the start of the quarter, the same dates as the NASDAQ-100 module.
 
-    參數:
-        start_date: 回測起始日（含）。
-        end_date: 回測結束日（含）。
-        freq: 取樣頻率，預設 quarterly。
+    Args:
+        start_date: Backtest start (inclusive).
+        end_date: Backtest end (inclusive).
+        freq: Sample frequency. Defaults to quarterly.
 
-    回傳:
-        {取樣日: 當天有效成分股集合}，依日期由早到晚。
+    Returns:
+        {sample date: set of constituents valid that day}, ordered from earliest to latest.
     """
     start = _coerce_date(start_date, "start_date")
     end = _coerce_date(end_date, "end_date")
@@ -476,7 +477,7 @@ def get_point_in_time_sp500(
         universe[sample] = _snapshot_as_of(history, sample)
 
     _log.info(
-        "S&P 500 時點股票池 %s ~ %s（%s）：%s 個時點",
+        "S&P 500 point-in-time universe %s to %s (%s): %s dates",
         start.isoformat(),
         end.isoformat(),
         freq,
@@ -487,17 +488,17 @@ def get_point_in_time_sp500(
 
 def get_union_universe_sp500(start_date: date, end_date: date) -> set[str]:
     """
-    回傳整段期間內曾經出現在 S&P 500 的成分股聯集。
+    Return the union of every name that appeared in the S&P 500 during the range.
 
-    從「起始日當時有效的那一列」開始，併入迄日以前的每一筆事件快照。
-    只併季度快照會漏掉季中納入、季末前又被剔除的股票。
+    It starts from the row that was valid on the start date and includes every event snapshot through the end date.
+    Merging only quarterly snapshots would miss a name added mid-quarter and removed before quarter-end.
 
-    參數:
-        start_date: 區間起日（含）。
-        end_date: 區間迄日（含）。
+    Args:
+        start_date: Range start (inclusive).
+        end_date: Range end (inclusive).
 
-    回傳:
-        期間內至少在某一筆有效快照裡出現過的代號集合。
+    Returns:
+        Symbols that appeared in at least one valid snapshot during the range.
     """
     start = _coerce_date(start_date, "start_date")
     end = _coerce_date(end_date, "end_date")
@@ -509,13 +510,13 @@ def get_union_universe_sp500(start_date: date, end_date: date) -> set[str]:
     if start_pos < 0:
         first, _last = _history_bounds(history)
         raise UniverseCoverageError(
-            f"無法建立 {start.isoformat()} 起的 S&P 500 聯集：早於資料起點 {first.isoformat()}。"
+            f"Cannot build an S&P 500 union from {start.isoformat()}: it is before the data start {first.isoformat()}."
         )
     end_pos = int(history["date"].searchsorted(pd.Timestamp(end), side="right"))
     window = history.iloc[start_pos:end_pos]
     if window.empty:
         raise UniverseCoverageError(
-            f"在 {start.isoformat()} 到 {end.isoformat()} 之間沒有可用的 S&P 500 快照。"
+            f"No usable S&P 500 snapshot between {start.isoformat()} and {end.isoformat()}."
         )
 
     union: set[str] = set()
@@ -523,11 +524,11 @@ def get_union_universe_sp500(start_date: date, end_date: date) -> set[str]:
         union.update(symbols)
     if not union:
         raise UniverseCoverageError(
-            f"{start.isoformat()} 到 {end.isoformat()} 的 S&P 500 聯集是空的。"
+            f"The S&P 500 union from {start.isoformat()} to {end.isoformat()} is empty."
         )
 
     _log.info(
-        "S&P 500 歷史成分股聯集 %s ~ %s：%s 檔（%s 筆事件快照）",
+        "S&P 500 historical union %s to %s: %s names (%s event snapshots)",
         start.isoformat(),
         end.isoformat(),
         len(union),
@@ -538,34 +539,34 @@ def get_union_universe_sp500(start_date: date, end_date: date) -> set[str]:
 
 def _quote_missing(ticker: str) -> bool:
     """
-    近端日線是否完全沒有資料。已下市代號的 info 常常沒有 country。
+    Whether recent daily bars are completely missing. Delisted symbols often have no country in info.
 
-    參數:
-        ticker: 股票代號。
+    Args:
+        ticker: Ticker symbol.
 
-    回傳:
-        True 表示沒有可用報價。
+    Returns:
+        True when there is no usable quote.
     """
     try:
         hist = yf.Ticker(ticker).history(period="5d")
     except Exception as exc:  # noqa: BLE001
-        _log.warning("讀取 %s 近期報價失敗: %s", ticker, exc)
+        _log.warning("Failed to read a recent quote for %s: %s", ticker, exc)
         return False
     return hist is None or hist.empty
 
 
 def _fetch_listing_info(ticker: str) -> tuple[dict[str, str] | None, str]:
     """
-    讀取 yfinance info 的 country、exchange 與公司名。暫時性失敗重試 3 次。
+    Read country, exchange, and company name from yfinance info. Retry a transient failure 3 times.
 
-    exchange 只代表掛牌場所。TSM 與 DIS 都是 NYQ，單看 exchange 會把外國 ADR
-    誤判成美國公司，所以國籍以 country 為準，exchange 只一併記下來。
+    exchange is only the listing venue. TSM and DIS are both NYQ, so exchange alone would
+    misread a foreign ADR as a US company. Nationality uses country. exchange is recorded alongside it.
 
-    參數:
-        ticker: 股票代號。
+    Args:
+        ticker: Ticker symbol.
 
-    回傳:
-        (欄位 dict, 失敗原因)。成功時失敗原因為空字串。
+    Returns:
+        (field dict, failure reason). The failure reason is an empty string on success.
     """
     last_err: Exception | None = None
     for attempt in range(3):
@@ -573,7 +574,7 @@ def _fetch_listing_info(ticker: str) -> tuple[dict[str, str] | None, str]:
             time.sleep(_YF_CALL_SLEEP_SEC)
             info = yf.Ticker(ticker).info or {}
             if not isinstance(info, dict):
-                last_err = ValueError("info 不是 dict")
+                last_err = ValueError("info is not a dict")
             else:
                 country = str(info.get("country") or "").strip()
                 exchange = str(info.get("exchange") or "").strip()
@@ -581,29 +582,29 @@ def _fetch_listing_info(ticker: str) -> tuple[dict[str, str] | None, str]:
                 if country or exchange:
                     return {"country": country, "exchange": exchange, "name": name}, ""
                 if info and _quote_missing(ticker):
-                    reason = "Yahoo 無報價（可能已下市），info 沒有 country / exchange"
-                    _log.warning("無法判斷 %s 是否為美國公司：%s", ticker, reason)
+                    reason = "Yahoo has no quote (it may be delisted), and info has no country / exchange"
+                    _log.warning("Cannot tell whether %s is a US company: %s", ticker, reason)
                     return None, reason
-                last_err = ValueError("info 沒有 country / exchange")
-        except Exception as exc:  # noqa: BLE001 — 單檔失敗改走重試
+                last_err = ValueError("info has no country / exchange")
+        except Exception as exc:  # noqa: BLE001 — a single-name failure is retried
             last_err = exc
         if attempt < 2:
             time.sleep(_YF_RETRY_DELAYS[attempt])
-    reason = f"已重試 3 次仍失敗：{last_err}"
-    _log.warning("無法判斷 %s 是否為美國公司（%s）", ticker, reason)
+    reason = f"Still failing after 3 attempts: {last_err}"
+    _log.warning("Cannot tell whether %s is a US company (%s)", ticker, reason)
     return None, reason
 
 
 def _is_foreign_issuer(country: str, name: str) -> bool | None:
     """
-    判斷是不是 S&P 500 通常不收的外國發行人 / ADR。
+    Decide whether this is a foreign issuer or ADR that the S&P 500 usually does not include.
 
-    參數:
-        country: yfinance info['country']。
-        name: 公司名稱，用來抓名稱裡就寫著 ADR 的情況。
+    Args:
+        country: yfinance info['country'].
+        name: Company name, used when the name itself says ADR.
 
-    回傳:
-        True 表示外國或 ADR；False 表示美國公司；None 表示資料不夠、不猜。
+    Returns:
+        True for a foreign issuer or ADR, False for a US company, None when the data is not enough to guess.
     """
     upper_name = name.upper()
     if "ADR" in upper_name or "DEPOSITARY" in upper_name:
@@ -617,13 +618,13 @@ def _split_only_in_current(
     tickers: list[str],
 ) -> tuple[list[str], list[str], list[str], dict[str, str]]:
     """
-    把「只在目前清單」的股票分成不合格的外國發行人，以及沒進過指數的美國公司。
+    Split names that are only on the current list into ineligible foreign issuers and US companies that never entered the index.
 
-    參數:
-        tickers: only_in_current 代號。
+    Args:
+        tickers: Symbols in only_in_current.
 
-    回傳:
-        (not_sp500_listed, sp500_but_excluded, eligibility_unknown, unknown_reasons)。
+    Returns:
+        (not_sp500_listed, sp500_but_excluded, eligibility_unknown, unknown_reasons).
     """
     foreign: list[str] = []
     excluded: list[str] = []
@@ -633,23 +634,23 @@ def _split_only_in_current(
         info, reason = _fetch_listing_info(ticker)
         if info is None:
             unknown.append(ticker)
-            unknown_reasons[ticker] = reason or "沒有 country / exchange"
+            unknown_reasons[ticker] = reason or "no country / exchange"
             continue
         verdict = _is_foreign_issuer(info["country"], info["name"])
         label = (
-            f"country={info['country'] or '（空）'} exchange={info['exchange'] or '（空）'}"
+            f"country={info['country'] or '(empty)'} exchange={info['exchange'] or '(empty)'}"
         )
         if verdict is None:
             unknown.append(ticker)
-            unknown_reasons[ticker] = f"有掛牌場所但沒有 country，無法判斷是否為美國公司（{label}）"
-            _log.warning("無法判斷 %s 是否為美國公司：%s", ticker, unknown_reasons[ticker])
+            unknown_reasons[ticker] = f"A listing venue is present but country is missing, so US status cannot be decided ({label})"
+            _log.warning("Cannot tell whether %s is a US company: %s", ticker, unknown_reasons[ticker])
             continue
         if verdict:
             foreign.append(ticker)
-            _log.info("%s %s → 外國發行人/ADR，S&P 500 通常不合格", ticker, label)
+            _log.info("%s %s -> foreign issuer/ADR, usually ineligible for the S&P 500", ticker, label)
         else:
             excluded.append(ticker)
-            _log.info("%s %s → 美國公司，但這段期間沒進過 S&P 500", ticker, label)
+            _log.info("%s %s -> US company, but it did not enter the S&P 500 during this window", ticker, label)
     return sorted(foreign), sorted(excluded), sorted(unknown), unknown_reasons
 
 
@@ -658,27 +659,27 @@ def compare_universes_sp500(
     point_in_time_union: set[str],
 ) -> dict[str, list[str] | float | dict[str, str]]:
     """
-    對比「今天手動清單」與 S&P 500 歷史成分股聯集。
+    Compare today's hand-picked list with the historical S&P 500 constituent union.
 
-    overlap_pct 是目前清單中、曾經出現在這段 S&P 500 歷史的比例（0-100）。
-    分母是目前清單檔數。代號依字面比對。
+    overlap_pct is the share of the current list that appeared in this stretch of S&P 500 history (0-100).
+    The denominator is the number of names on the current list. Symbols are compared literally.
 
-    only_in_current 再拆成：
-    - not_sp500_listed：yfinance info['country'] 不是美國，或名稱標明 ADR。
-      這類公司通常不符合 S&P 500「美國公司」資格，不是 survivorship bias。
-      exchange 只記錄掛牌場所，不用來判斷國籍：TSM 與 DIS 的 exchange 都是 NYQ。
-    - sp500_but_excluded：美國公司，但這段期間沒進過 S&P 500。
-      這才是今天篩、過去不在指數裡的候選。
-    查不到 country 的放在 eligibility_unknown，不併入上面兩類。
+    only_in_current is split further:
+    - not_sp500_listed: yfinance info['country'] is not the United States, or the name says ADR.
+      These companies usually fail the S&P 500 "US company" rule. This is not survivorship bias.
+      exchange only records the listing venue and is not used for nationality: TSM and DIS are both NYQ.
+    - sp500_but_excluded: a US company that did not enter the S&P 500 during this window.
+      These are the names screened today that were not in the index in the past.
+    Names with no country go in eligibility_unknown and are not merged into the two groups above.
 
-    參數:
-        current_list: 目前手動選股清單。
-        point_in_time_union: get_union_universe_sp500 的結果。
+    Args:
+        current_list: The current hand-picked list.
+        point_in_time_union: The result of get_union_universe_sp500.
 
-    回傳:
-        only_in_current、only_in_historical、overlap、overlap_pct、
-        not_sp500_listed、sp500_but_excluded、eligibility_unknown、
-        eligibility_unknown_reasons。
+    Returns:
+        only_in_current, only_in_historical, overlap, overlap_pct,
+        not_sp500_listed, sp500_but_excluded, eligibility_unknown,
+        eligibility_unknown_reasons.
     """
     current = {str(ticker).upper().strip() for ticker in current_list if str(ticker).strip()}
     historical = {
@@ -703,10 +704,10 @@ def compare_universes_sp500(
 
 
 def _print_ticker_block(title: str, tickers: list[str]) -> None:
-    """印出一組代號：先給數量，再逐列輸出。"""
-    print(f"{title}（{len(tickers)} 檔）", flush=True)
+    """Print one group of symbols: the count first, then one row at a time."""
+    print(f"{title} ({len(tickers)} names)", flush=True)
     if not tickers:
-        print("  （無）", flush=True)
+        print("  (none)", flush=True)
         return
     line: list[str] = []
     for ticker in tickers:
@@ -727,34 +728,34 @@ if __name__ == "__main__":
     history = download_sp500_history()
     first, last = _history_bounds(history)
     print(
-        f"S&P 500 時點股票池：{start.isoformat()} ~ {end.isoformat()}，每季一個時點",
+        f"S&P 500 point-in-time universe: {start.isoformat()} to {end.isoformat()}, one date per quarter",
         flush=True,
     )
     print(
-        f"來源涵蓋 {first.isoformat()} ~ {last.isoformat()}（{len(history)} 筆事件列）。"
-        "這份檔來自 Wikipedia 修訂整理，作者說明變更清單可能有缺漏。",
+        f"Source coverage {first.isoformat()} to {last.isoformat()} ({len(history)} event rows). "
+        "This file is a Wikipedia revision. The author notes that the change list can have gaps.",
         flush=True,
     )
 
     universes = get_point_in_time_sp500(start, end, freq="quarterly")
-    print("=== 每季成分股數量 ===", flush=True)
+    print("=== Constituent count by quarter ===", flush=True)
     for sample, members in universes.items():
         flag = ""
         if not 490 <= len(members) <= 520:
-            flag = "  ← 偏離 500 較多，請對一下來源列"
-            _log.warning("%s 的成分股數是 %s，偏離約 500", sample.isoformat(), len(members))
-        print(f"  {sample.isoformat()}  {len(members):3d} 檔{flag}", flush=True)
+            flag = "  <- well away from 500, check the source row"
+            _log.warning("%s has %s constituents, well away from about 500", sample.isoformat(), len(members))
+        print(f"  {sample.isoformat()}  {len(members):3d} names{flag}", flush=True)
 
     union = get_union_universe_sp500(start, end)
     quarter_sizes = [len(members) for members in universes.values()]
-    print(f"期間聯集大小: {len(union)} 檔", flush=True)
+    print(f"Union size over the window: {len(union)} names", flush=True)
     print(
-        f"單季規模: min={min(quarter_sizes)}  max={max(quarter_sizes)}"
-        "（指數名義 500 檔，新增剔除空窗會有個位數出入）",
+        f"Single-quarter size: min={min(quarter_sizes)}  max={max(quarter_sizes)}"
+        " (the index is nominally 500 names; add/delete gaps move the count by a few)",
         flush=True,
     )
     if len(union) < max(quarter_sizes):
-        raise RuntimeError("聯集小於單季成分股數，時點名單計算有誤")
+        raise RuntimeError("The union is smaller than a single quarter, so the point-in-time lists are wrong")
 
     report = compare_universes_sp500(TICKER_LIST, union)
     overlap_pct = float(report["overlap_pct"])
@@ -767,30 +768,30 @@ if __name__ == "__main__":
     classified = len(not_listed) + len(excluded) + len(unknown)
     if classified != len(only_current):
         raise RuntimeError(
-            f"only_in_current 拆分數量不符：{classified} != {len(only_current)}"
+            f"only_in_current split counts do not add up: {classified} != {len(only_current)}"
         )
 
-    print("=== 目前 60 檔 vs 2022 至今 S&P 500 聯集 ===", flush=True)
-    print(f"目前清單: {len(TICKER_LIST)} 檔", flush=True)
-    print(f"重疊: {len(overlap)} 檔", flush=True)
+    print("=== Current 60 names vs the S&P 500 union from 2022 ===", flush=True)
+    print(f"Current list: {len(TICKER_LIST)} names", flush=True)
+    print(f"Overlap: {len(overlap)} names", flush=True)
     print(
-        f"overlap_pct: {overlap_pct:.2f}%（目前清單中，曾經進入這段歷史 S&P 500 的比例）",
+        f"overlap_pct: {overlap_pct:.2f}% (share of the current list that entered this stretch of S&P 500 history)",
         flush=True,
     )
-    _print_ticker_block("只在目前清單、這段歷史從沒進過 S&P 500", only_current)
-    _print_ticker_block("重疊", overlap)
-    _print_ticker_block("只在歷史 S&P 500、目前清單沒有", only_historical)
+    _print_ticker_block("Only on the current list, never in this S&P 500 history", only_current)
+    _print_ticker_block("Overlap", overlap)
+    _print_ticker_block("Only in historical S&P 500, not on the current list", only_historical)
 
-    print("=== only_in_current 依是否像 S&P 500 合格公司拆分 ===", flush=True)
+    print("=== only_in_current split by whether the name looks S&P 500 eligible ===", flush=True)
     print(
-        "not_sp500_listed：country 不是美國，或名稱標明 ADR。"
-        "S&P 500 通常只收美國公司，這不是 survivorship bias。",
+        "not_sp500_listed: country is not the United States, or the name says ADR. "
+        "The S&P 500 usually includes only US companies. This is not survivorship bias.",
         flush=True,
     )
     _print_ticker_block("not_sp500_listed", not_listed)
     print(
-        "sp500_but_excluded：美國公司，但這段期間沒進過 S&P 500。"
-        "這才是今天篩、過去不在指數裡。",
+        "sp500_but_excluded: a US company that did not enter the S&P 500 during this window. "
+        "These are the names screened today that were not in the index in the past.",
         flush=True,
     )
     _print_ticker_block("sp500_but_excluded", excluded)
@@ -798,21 +799,21 @@ if __name__ == "__main__":
         reasons = report["eligibility_unknown_reasons"]
         reason_map = reasons if isinstance(reasons, dict) else {}
         print(
-            "eligibility_unknown：yfinance 沒有足夠的 country，未歸入上面兩類。",
+            "eligibility_unknown: yfinance did not return enough country data, so these names were not placed in either group above.",
             flush=True,
         )
-        print(f"eligibility_unknown（{len(unknown)} 檔）", flush=True)
+        print(f"eligibility_unknown ({len(unknown)} names)", flush=True)
         for ticker in unknown:
-            print(f"  {ticker}（{reason_map.get(ticker, '沒有 country')}）", flush=True)
+            print(f"  {ticker} ({reason_map.get(ticker, 'no country')})", flush=True)
 
     current = {str(ticker).upper() for ticker in TICKER_LIST}
     nasdaq_union = get_union_universe(start, end)
     nasdaq_overlap = current & nasdaq_union
     nasdaq_pct = round(100.0 * len(nasdaq_overlap) / len(current), 2) if current else 0.0
-    print("=== overlap_pct 對照（目前清單中，曾經進入該指數的比例）===", flush=True)
-    print(f"  NASDAQ-100   {nasdaq_pct:6.2f}%   （重疊 {len(nasdaq_overlap)} / {len(current)}）", flush=True)
-    print(f"  S&P 500      {overlap_pct:6.2f}%   （重疊 {len(overlap)} / {len(current)}）", flush=True)
+    print("=== overlap_pct comparison (share of the current list that entered that index) ===", flush=True)
+    print(f"  NASDAQ-100   {nasdaq_pct:6.2f}%   (overlap {len(nasdaq_overlap)} / {len(current)})", flush=True)
+    print(f"  S&P 500      {overlap_pct:6.2f}%   (overlap {len(overlap)} / {len(current)})", flush=True)
     print(
-        "代號依字面比對。exchange 不能區分 ADR：TSM 與 DIS 都是 NYQ，國籍看的是 country。",
+        "Symbols are compared literally. exchange cannot separate an ADR: TSM and DIS are both NYQ, and nationality comes from country.",
         flush=True,
     )

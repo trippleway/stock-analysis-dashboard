@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-時點 S&P 500 上的因子 rank IC。只算 IC，不做回測、也不選股。
+Factor rank IC on the point-in-time S&P 500. This computes IC only. It does not backtest and it does not pick stocks.
 
-因子定義、持有區間與 Spearman 算法沿用 factor_research.py。
-差別是每個月底的橫斷面：只用 backtest_universe_sp500.get_point_in_time_sp500()
-在該月底當天的成分股，不用固定清單，也不用整段聯集。
+Factor definitions, holding windows, and the Spearman method follow factor_research.py.
+The difference is the month-end cross section: only the constituents from
+backtest_universe_sp500.get_point_in_time_sp500() on that month-end date.
+It does not use a fixed list, and it does not use the union over the whole window.
 
-已下市的代號 yfinance 常常沒有報價。抓不到的股票不會被補進橫斷面，
-所以結果偏向還能被抓到的公司。抓不到不等於全部都已下市。
+Delisted symbols often have no yfinance quote. Names that cannot be fetched are not filled into the cross section,
+so the result leans toward companies that can still be fetched. A missing quote does not mean every such name is delisted.
 
-下載幾百檔歷史股價很慢。不加參數時只印預估檔數與時間，不下載。
-確認後才抓資料並計算。價量已經在本地時，加上 --cache-only 就不再打 yfinance：
+Downloading a few hundred histories is slow. With no arguments this only prints the estimated name count and time. It does not download.
+Data is fetched and computed only after confirmation. When prices are already local, --cache-only does not call yfinance:
 
     python src/factor_research_pit.py
     python src/factor_research_pit.py --confirm
@@ -72,132 +73,132 @@ if not _log.handlers:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-# 預估下載時間用的假設，不是實際迴圈的 sleep。實際間隔在 backtest_data，是 0.7 秒。
-# 2.5 秒涵蓋這 0.7 秒，再加上一次成功的歷史股價請求。失敗會重試，時間更長。
+# Assumptions used only to estimate download time, not the sleep inside the real loop. The real gap is 0.7 seconds in backtest_data.
+# 2.5 seconds covers that 0.7 seconds plus one successful history request. A failure retries and takes longer.
 _ESTIMATE_SECONDS_PER_FETCH = 2.5
-# 前視偏差檢查會對每個訊號月截斷重算。以單檔約 0.3 秒估算整段檢查。
+# The lookahead check truncates and recomputes every signal month. The whole check is estimated at about 0.3 seconds per name.
 _ESTIMATE_SECONDS_PER_STOCK_CHECK = 0.3
-_SURVIVOR_BANNER = "已下市股票無法取得，結果偏向倖存者。"
-# 下載前已完成下市或被併購、Yahoo 因此沒有這段歷史的代號。
-# 只列有成交紀錄的案子，不用來猜測仍在交易的公司。
+_SURVIVOR_BANNER = "Delisted stocks cannot be fetched, so the result leans toward survivors."
+# Symbols that finished a delisting or acquisition before this download, so Yahoo has no history for this window.
+# Only deals with a recorded close are listed. This set is not used to guess about companies that are still trading.
 _ACQUIRED_BEFORE_DOWNLOAD = frozenset(
     {
-        "ANSS",  # Synopsys，2025-07
-        "ATVI",  # Microsoft，2023-10
-        "CDAY",  # 舊代號；發行公司 Dayforce 於 2026-02 被 Thoma Bravo 併購
-        "CMA",  # Fifth Third，2026-02
-        "CTLT",  # Novo Holdings，2024-12
-        "DAY",  # Thoma Bravo，2026-02
-        "DFS",  # Capital One，2025-05
-        "HES",  # Chevron，2025-07
-        "JNPR",  # HPE，2025-07
-        "MRO",  # ConocoPhillips，2024-11
-        "PXD",  # Exxon，2024-05
-        "QRVO",  # Skyworks，2026-10（樣本結束後、這次下載前）
-        "WBA",  # Sycamore，2025-08
-        "WRK",  # Smurfit Westrock，2024-07
+        "ANSS",  # Synopsys, 2025-07
+        "ATVI",  # Microsoft, 2023-10
+        "CDAY",  # Old symbol; the issuer Dayforce was acquired by Thoma Bravo in 2026-02
+        "CMA",  # Fifth Third, 2026-02
+        "CTLT",  # Novo Holdings, 2024-12
+        "DAY",  # Thoma Bravo, 2026-02
+        "DFS",  # Capital One, 2025-05
+        "HES",  # Chevron, 2025-07
+        "JNPR",  # HPE, 2025-07
+        "MRO",  # ConocoPhillips, 2024-11
+        "PXD",  # Exxon, 2024-05
+        "QRVO",  # Skyworks, 2026-10 (after the sample ended, before this download)
+        "WBA",  # Sycamore, 2025-08
+        "WRK",  # Smurfit Westrock, 2024-07
     }
 )
-# 使用者指出這些代號目前應仍上市，抓不到不當成下市。
+# The user noted these symbols should still be listed. A miss is not treated as a delisting.
 _STILL_LISTED_UNCLEAR = ("MMC", "EA", "BK", "K", "EQR", "AVB", "CTRA", "HOLX", "IPG")
 
 
 def _yahoo_symbol(ticker: str) -> str:
     """
-    歷史成分股代號轉成 Yahoo 報價代號。
+    Turn a historical constituent symbol into the Yahoo quote symbol.
 
-    S&P 歷史檔使用 BRK.B 這種寫法，yfinance 要的是 BRK-B。
-    規則與 backtest_engine_v2._yahoo_symbol 相同。這只改請求用的代號，
-    不把股票加進或移出當月成分股。
+    The S&P history file writes BRK.B. yfinance wants BRK-B.
+    The rule matches backtest_engine_v2._yahoo_symbol. This only changes the symbol used for the request.
+    It does not add a stock to, or remove a stock from, that month's constituents.
 
-    參數:
-        ticker: 時點名單上的代號。
+    Args:
+        ticker: Symbol on the point-in-time list.
 
-    回傳:
-        用來向 yfinance 要價量的代號。
+    Returns:
+        The symbol used to request prices from yfinance.
     """
     return str(ticker).upper().strip().replace(".", "-")
 
 
 def _fetch_bounds() -> tuple[date, date]:
     """
-    價量請求的起迄日。起日含暖機，讓第一個訊號月的 252 日窗口有機會算得出來。
+    Start and end dates for the price request. The start includes warmup so the first signal month's 252-day window can be computed.
 
-    回傳:
-        (請求起日, 請求迄日)。迄日是 config 的回測迄日。
+    Returns:
+        (request start, request end). The end is the backtest end date from config.
     """
     return BACKTEST_START - timedelta(days=_WARMUP_DAYS), BACKTEST_END
 
 
 def _print_banner() -> None:
-    """研究輸出的第一句。下市股票沒有報價，橫斷面會少掉它們。"""
+    """The first line of the research output. Delisted stocks have no quote, so the cross section loses them."""
     print(_SURVIVOR_BANNER, flush=True)
 
 
 def _signal_windows() -> list[dict[str, Any]]:
     """
-    用 SPY 交易日排出與 factor_research 相同的 36 個訊號月。
+    Use SPY trading days to build the same 36 signal months as factor_research.
 
-    SPY 若已在本地快取就不會重新下載。
+    SPY is not downloaded again when it is already in the local cache.
 
-    回傳:
-        每個月一列，含 signal、signal_month、hold。
+    Returns:
+        One row per month, with signal, signal_month, and hold.
     """
     fetch_start, fetch_end = _fetch_bounds()
     spy = load_ohlcv(_CALENDAR, fetch_start, fetch_end)
     if spy is None or spy.empty:
-        raise RuntimeError("沒有 SPY 價量，無法沿用現有的月底日曆")
+        raise RuntimeError("No SPY prices, so the existing month-end calendar cannot be reused")
     prepared = _prepare_ohlcv(spy)
     windows = _holding_windows(prepared.index)
     if not windows:
-        raise RuntimeError("沒有任何訊號月")
+        raise RuntimeError("There are no signal months")
     return windows
 
 
 def _members_by_month(windows: list[dict[str, Any]]) -> dict[str, set[str]]:
     """
-    每個訊號月底的 S&P 500 成分股。
+    S&P 500 constituents at each signal month-end.
 
-    一次取出區間內的每日時點名單，再只留下訊號日那天的集合。
-    每日名單來自 get_point_in_time_sp500，用的是小於等於當天的最近一筆完整名單。
-    IC 不使用這整段的聯集。
+    The daily point-in-time lists for the range are loaded once, then only the set on the signal date is kept.
+    The daily lists come from get_point_in_time_sp500 and use the latest full list on or before that day.
+    IC does not use the union over the whole range.
 
-    參數:
-        windows: 訊號月。
+    Args:
+        windows: Signal months.
 
-    回傳:
-        訊號月 YYYY-MM 對到該月底的成分股代號。
+    Returns:
+        Signal month YYYY-MM mapped to the constituent symbols at that month-end.
     """
     daily = get_point_in_time_sp500(BACKTEST_START, BACKTEST_END, freq="daily")
     members: dict[str, set[str]] = {}
     for window in windows:
         day = pd.Timestamp(window["signal"]).date()
         if day not in daily:
-            raise RuntimeError(f"{window['signal_month']} 的訊號日 {day.isoformat()} 沒有時點成分股")
+            raise RuntimeError(f"Signal date {day.isoformat()} for {window['signal_month']} has no point-in-time constituents")
         members[str(window["signal_month"])] = set(daily[day])
     return members
 
 
 def _needs_download(symbol: str, start: date, end: date) -> bool:
     """
-    這個 Yahoo 代號的本地價量是否還不夠這段區間。
+    Whether this Yahoo symbol's local prices still do not cover the range.
 
-    判斷與 backtest_data.load_ohlcv 的快取涵蓋規則相同。只讀本地檔，不發請求。
+    The check matches the cache-coverage rule in backtest_data.load_ohlcv. It only reads the local file and does not send a request.
 
-    參數:
-        symbol: Yahoo 代號。
-        start: 請求起日。
-        end: 請求迄日。
+    Args:
+        symbol: Yahoo symbol.
+        start: Request start.
+        end: Request end.
 
-    回傳:
-        True 表示執行時會向 yfinance 要資料。
+    Returns:
+        True when the run will ask yfinance for data.
     """
     if not _cache_path(symbol).is_file():
         return True
     try:
         cached = _read_cache(symbol)
-    except Exception as exc:  # noqa: BLE001 — 壞快取視為需要重抓
-        _log.warning("讀取 %s 價量快取失敗，預估時視為需要下載: %s", symbol, exc)
+    except Exception as exc:  # noqa: BLE001 — a broken cache is treated as needing a refetch
+        _log.warning("Failed to read the price cache for %s; the estimate treats it as a download: %s", symbol, exc)
         return True
     if cached is None or cached.empty:
         return True
@@ -205,7 +206,7 @@ def _needs_download(symbol: str, start: date, end: date) -> bool:
 
 
 def _shift_month(token: str, offset: int) -> str:
-    """把 YYYY-MM 平移 offset 個月。"""
+    """Shift a YYYY-MM token by offset months."""
     year, month = (int(part) for part in token.split("-", 1))
     index = year * 12 + (month - 1) + offset
     return f"{index // 12:04d}-{index % 12 + 1:02d}"
@@ -213,13 +214,13 @@ def _shift_month(token: str, offset: int) -> str:
 
 def _format_month_span(months: list[str]) -> str:
     """
-    把已排序的 YYYY-MM 收成連續區間。
+    Collapse sorted YYYY-MM values into contiguous ranges.
 
-    參數:
-        months: 由早到晚的月份。
+    Args:
+        months: Months from earliest to latest.
 
-    回傳:
-        例如「2023-09 至 2024-02、2024-06」。
+    Returns:
+        For example "2023-09 to 2024-02, 2024-06".
     """
     if not months:
         return ""
@@ -232,27 +233,27 @@ def _format_month_span(months: list[str]) -> str:
         ranges.append((start, previous))
         start = previous = month
     ranges.append((start, previous))
-    parts = [start if start == end else f"{start} 至 {end}" for start, end in ranges]
-    return "、".join(parts)
+    parts = [start if start == end else f"{start} to {end}" for start, end in ranges]
+    return ", ".join(parts)
 
 
 def _format_duration(seconds: float) -> str:
-    """把秒數說成幾分鐘又幾秒。不滿一分鐘只說秒。"""
+    """Say a number of seconds as minutes and seconds. Under one minute, only seconds are shown."""
     total = max(0, int(round(seconds)))
     minutes, remain = divmod(total, 60)
     if minutes == 0:
-        return f"{remain} 秒"
+        return f"{remain} seconds"
     if remain == 0:
-        return f"{minutes} 分鐘"
-    return f"{minutes} 分鐘 {remain} 秒"
+        return f"{minutes} minutes"
+    return f"{minutes} minutes {remain} seconds"
 
 
 def build_plan() -> dict[str, Any]:
     """
-    只用時點名單與本地快取做下載預估。不向 yfinance 要個股歷史。
+    Estimate the download from the point-in-time list and the local cache only. Individual histories are not requested from yfinance.
 
-    回傳:
-        訊號月、每月成分股、要請求的 Yahoo 代號，以及快取是否已涵蓋。
+    Returns:
+        Signal months, monthly constituents, Yahoo symbols to request, and whether the cache already covers them.
     """
     windows = _signal_windows()
     members = _members_by_month(windows)
@@ -279,60 +280,60 @@ def build_plan() -> dict[str, Any]:
 
 
 def _print_estimate(plan: dict[str, Any]) -> None:
-    """印出每月成分股數、不重複檔數，以及預估下載與檢查時間。不下載。"""
+    """Print the monthly constituent count, the unique name count, and the estimated download and check time. Nothing is downloaded."""
     members: dict[str, set[str]] = plan["members"]
     windows: list[dict[str, Any]] = plan["windows"]
     symbols: list[str] = plan["symbols"]
     pending: list[str] = plan["pending"]
     sizes = [len(members[window["signal_month"]]) for window in windows]
     print(
-        f"固定區間 {BACKTEST_START.isoformat()} 至 {BACKTEST_END.isoformat()}。"
-        f"訊號月 {windows[0]['signal_month']} 至 {windows[-1]['signal_month']}，共 {len(windows)} 個。",
+        f"Fixed window {BACKTEST_START.isoformat()} to {BACKTEST_END.isoformat()}. "
+        f"Signal months {windows[0]['signal_month']} to {windows[-1]['signal_month']}, {len(windows)} in total.",
         flush=True,
     )
     print(
-        "每個月只用該月底的 S&P 500 成分股。下面的檔數是時點名單，還沒向 yfinance 要股價。",
+        "Each month uses only that month-end's S&P 500 constituents. The counts below are the point-in-time list. Prices have not been requested from yfinance yet.",
         flush=True,
     )
-    print(f"{'訊號月':<10}{'當時成分股':>10}", flush=True)
+    print(f"{'Month':<10}{'Members':>10}", flush=True)
     for window in windows:
         month = window["signal_month"]
         print(f"{month:<10}{len(members[month]):>10}", flush=True)
     print(
-        f"每月成分股 {min(sizes)}–{max(sizes)} 檔，平均 {sum(sizes) / len(sizes):.1f} 檔。",
+        f"Monthly constituents {min(sizes)}-{max(sizes)} names, average {sum(sizes) / len(sizes):.1f}.",
         flush=True,
     )
     dotted = sorted(raw for raw in plan["yahoo_of"] if "." in raw)
     print(
-        f"36 個月出現過的不重複代號 {len(plan['yahoo_of'])} 個，"
-        f"轉成 Yahoo 代號後是 {len(symbols)} 檔。",
+        f"Unique symbols across 36 months: {len(plan['yahoo_of'])}. "
+        f"After converting to Yahoo symbols: {len(symbols)}.",
         flush=True,
     )
     if dotted:
         print(
-            f"其中 {len(dotted)} 個代號含有句點，請求時改成連字號：{', '.join(dotted)}。",
+            f"{len(dotted)} of those symbols contain a dot and are requested with a hyphen: {', '.join(dotted)}.",
             flush=True,
         )
-    print(f"本地快取已涵蓋這段區間：{len(symbols) - len(pending)} 檔。", flush=True)
-    print(f"需要下載：{len(pending)} 檔。", flush=True)
+    print(f"Local cache already covers this window: {len(symbols) - len(pending)} names.", flush=True)
+    print(f"Need to download: {len(pending)} names.", flush=True)
     download_seconds = len(pending) * _ESTIMATE_SECONDS_PER_FETCH
     check_seconds = len(symbols) * _ESTIMATE_SECONDS_PER_STOCK_CHECK
     print(
-        f"預估下載時間約 {_format_duration(download_seconds)}"
-        f"（每檔 {_ESTIMATE_SECONDS_PER_FETCH:.1f} 秒，含呼叫前 0.7 秒間隔；"
-        "抓不到而重試 3 次的代號會更久）。",
+        f"Estimated download time about {_format_duration(download_seconds)} "
+        f"({_ESTIMATE_SECONDS_PER_FETCH:.1f} seconds per name, including the 0.7 second gap before each call; "
+        "a symbol that misses and retries 3 times takes longer).",
         flush=True,
     )
     print(
-        f"預估前視偏差檢查約 {_format_duration(check_seconds)}"
-        f"（已下載的 {len(symbols)} 檔都要截斷重算）。",
+        f"Estimated lookahead check about {_format_duration(check_seconds)} "
+        f"(all {len(symbols)} downloaded names are truncated and recomputed).",
         flush=True,
     )
     print(
-        f"合計約 {_format_duration(download_seconds + check_seconds)}。這是成功路徑的粗估，不是保證。",
+        f"About {_format_duration(download_seconds + check_seconds)} in total. This is a rough estimate of the success path, not a guarantee.",
         flush=True,
     )
-    print("尚未下載。確認後再執行：", flush=True)
+    print("Nothing has been downloaded yet. Run this after you confirm:", flush=True)
     print("    python src/factor_research_pit.py --confirm", flush=True)
 
 
@@ -341,19 +342,19 @@ def _print_gap_report(
     loaded: set[str],
 ) -> None:
     """
-    印出每個月的成分股、實際抓到的檔數、缺漏比例，以及整段抓不到的代號。
+    Print each month's constituent count, how many were actually fetched, the gap ratio, and symbols missing for the whole window.
 
-    參數:
-        plan: build_plan 的結果。
-        loaded: 成功取得價量的 Yahoo 代號。
+    Args:
+        plan: The result of build_plan.
+        loaded: Yahoo symbols whose prices were fetched.
     """
     members: dict[str, set[str]] = plan["members"]
     yahoo_of: dict[str, str] = plan["yahoo_of"]
     months_of: dict[str, list[str]] = plan["months_of"]
     windows: list[dict[str, Any]] = plan["windows"]
-    print("\n=== 資料缺口（時點成分股 vs 實際取得的價量）===", flush=True)
-    print("缺漏比例 = （當時成分股 − 抓到的檔數） / 當時成分股。", flush=True)
-    header = f"{'訊號月':<10}{'當時成分股':>10}{'抓到':>8}{'缺漏比例':>10}"
+    print("\n=== Data gaps (point-in-time constituents vs prices actually fetched) ===", flush=True)
+    print("Gap ratio = (constituents then - names fetched) / constituents then.", flush=True)
+    header = f"{'Month':<10}{'Members':>10}{'Fetched':>8}{'Gap':>10}"
     print(header, flush=True)
     for window in windows:
         month = window["signal_month"]
@@ -363,33 +364,33 @@ def _print_gap_report(
         print(f"{month:<10}{len(names):>10}{fetched:>8}{ratio * 100:>9.1f}%", flush=True)
 
     missing = [raw for raw in months_of if yahoo_of[raw] not in loaded]
-    print(f"\n整段抓不到的代號：{len(missing)} 個。", flush=True)
+    print(f"\nSymbols missing for the whole window: {len(missing)}.", flush=True)
     if not missing:
-        print("每個時點代號都有價量。", flush=True)
+        print("Every point-in-time symbol has prices.", flush=True)
         return
     for raw in sorted(missing):
         months = sorted(set(months_of[raw]))
         yahoo = yahoo_of[raw]
-        label = raw if yahoo == raw else f"{raw}（請求 {yahoo}）"
-        print(f"  {label}：{_format_month_span(months)}", flush=True)
+        label = raw if yahoo == raw else f"{raw} (requested {yahoo})"
+        print(f"  {label}: {_format_month_span(months)}", flush=True)
     acquired = [raw for raw in sorted(missing) if raw in _ACQUIRED_BEFORE_DOWNLOAD]
     unknown = [raw for raw in sorted(missing) if raw not in _ACQUIRED_BEFORE_DOWNLOAD]
     still_listed = [raw for raw in _STILL_LISTED_UNCLEAR if raw in unknown]
     print(
-        "確定下市或被併購："
-        + ("、".join(acquired) if acquired else "無")
-        + "。這些公司在這次下載前已完成下市或被併購。",
+        "Confirmed delisted or acquired: "
+        + (", ".join(acquired) if acquired else "none")
+        + ". These companies finished a delisting or acquisition before this download.",
         flush=True,
     )
-    unknown_text = "、".join(unknown) if unknown else "無"
+    unknown_text = ", ".join(unknown) if unknown else "none"
     note = ""
     if still_listed:
         note = (
-            "其中 "
-            + "、".join(still_listed)
-            + " 目前應仍上市，抓不到較像 Yahoo 代號或報價問題，不是下市。"
+            "Of those, "
+            + ", ".join(still_listed)
+            + " should still be listed. A miss looks more like a Yahoo symbol or quote problem than a delisting."
         )
-    print(f"原因不明：{unknown_text}。{note}", flush=True)
+    print(f"Unknown: {unknown_text}. {note}", flush=True)
 
 
 def _pit_monthly_ic(
@@ -400,21 +401,21 @@ def _pit_monthly_ic(
     yahoo_of: dict[str, str],
 ) -> tuple[pd.DataFrame, dict[str, list[int]]]:
     """
-    每個月只用該月底成分股計算 rank IC。
+    Compute rank IC using only that month-end's constituents.
 
-    算法與 factor_research._monthly_ic 相同：持有期報酬用 _holding_price_returns，
-    相關用 _spearman。沒有價量的成分股不進入這個橫斷面。
-    這裡不把 36 個月的聯集拿來排名。
+    The method matches factor_research._monthly_ic: holding-period returns use _holding_price_returns,
+    and the correlation uses _spearman. Constituents with no prices do not enter this cross section.
+    The union of the 36 months is not ranked here.
 
-    參數:
-        factors: 已取得價量的股票的因子表，鍵是 Yahoo 代號。
-        close: 對齊到 SPY 日曆的收盤價。
-        windows: 訊號月。
-        members: 每月的原始成分股代號。
-        yahoo_of: 原始代號對到 Yahoo 代號。
+    Args:
+        factors: Factor frames for stocks whose prices were fetched. Keys are Yahoo symbols.
+        close: Closes aligned to the SPY calendar.
+        windows: Signal months.
+        members: Raw constituent symbols for each month.
+        yahoo_of: Raw symbol mapped to the Yahoo symbol.
 
-    回傳:
-        (月度 IC, 每個因子在各有效月份的橫斷面檔數)。
+    Returns:
+        (monthly IC, cross-section name counts for each factor in each usable month).
     """
     ic = pd.DataFrame(
         index=[window["signal_month"] for window in windows],
@@ -442,16 +443,16 @@ def _pit_monthly_ic(
 
 def _print_pit_table(ic: pd.DataFrame, used_counts: dict[str, list[int]]) -> list[dict[str, Any]]:
     """
-    印出與 factor_research 相同的 IC 表，並多一欄平均橫斷面檔數。
+    Print the same IC table as factor_research, plus a column for the average cross-section count.
 
-    平均橫斷面檔數是有效月份裡進入 Spearman 的平均檔數。
+    The average cross-section count is the average number of names that entered Spearman in the usable months.
 
-    參數:
-        ic: 月度 IC。
-        used_counts: 每個因子的有效月份檔數。
+    Args:
+        ic: Monthly IC.
+        used_counts: Usable-month name counts for each factor.
 
-    回傳:
-        依 |t| 由大到小排好的列，供 t 值對照使用。
+    Returns:
+        Rows sorted by |t| descending, for the t-stat comparison.
     """
     rows: list[dict[str, Any]] = []
     for key, label in _FACTORS:
@@ -490,10 +491,10 @@ def _print_pit_table(ic: pd.DataFrame, used_counts: dict[str, list[int]]) -> lis
             ],
         }
     )
-    print("\n=== 月度 rank IC（時點 S&P 500，Spearman，依 |t| 由大到小）===", flush=True)
+    print("\n=== Monthly rank IC (point-in-time S&P 500, Spearman, sorted by |t|) ===", flush=True)
     print(
-        "t = 平均 IC / (IC 樣本標準差 / sqrt(有效月數))。"
-        "平均橫斷面檔數是這些有效月份裡進入 Spearman 的平均檔數。",
+        "t = mean IC / (IC sample standard deviation / sqrt(usable months)). "
+        "The average cross-section count is the average number of names that entered Spearman in those usable months.",
         flush=True,
     )
     print(display.to_string(index=False), flush=True)
@@ -502,15 +503,15 @@ def _print_pit_table(ic: pd.DataFrame, used_counts: dict[str, list[int]]) -> lis
 
 def _group_a_t(*, cache_only: bool) -> dict[str, float]:
     """
-    用 factor_research 的同一套算法，重算組 A 34 檔的 t 值。
+    Recompute t-stats for the 34 names in group A with the same method as factor_research.
 
-    這份名單是固定清單。對照用，不拿來做時點 IC。
+    That list is a fixed universe. It is for comparison and is not used for the point-in-time IC.
 
-    參數:
-        cache_only: True 時組 A 也只讀本地快取。
+    Args:
+        cache_only: When True, group A is also read from the local cache only.
 
-    回傳:
-        因子代號對到 t 統計量。
+    Returns:
+        Factor key mapped to its t-stat.
     """
     tickers = list(define_three_groups()["A"])
     if cache_only:
@@ -518,7 +519,7 @@ def _group_a_t(*, cache_only: bool) -> dict[str, float]:
         histories = _load_prices(tickers, fetch_start, fetch_end, cache_only=True)
         spy = _slice_cache(_CALENDAR, fetch_start, fetch_end)
         if spy is None or spy.empty:
-            raise RuntimeError("本地沒有 SPY 價量，無法重算 34 檔")
+            raise RuntimeError("No local SPY prices, so the 34 names cannot be recomputed")
         master = _prepare_ohlcv(spy).index
         close = pd.DataFrame(
             {ticker: history["Close"].reindex(master) for ticker, history in histories.items()},
@@ -539,15 +540,15 @@ def _group_a_t(*, cache_only: bool) -> dict[str, float]:
 
 def _print_t_comparison(pit_rows: list[dict[str, Any]], group_a_t: dict[str, float]) -> None:
     """
-    把 34 檔固定清單與時點 S&P 500 的 t 值放在同一張表。
+    Put t-stats for the fixed 34-name list and the point-in-time S&P 500 in one table.
 
-    參數:
-        pit_rows: PIT 表的列，已依 |t| 排序。
-        group_a_t: 組 A 的 t 值。
+    Args:
+        pit_rows: Rows from the PIT table, already sorted by |t|.
+        group_a_t: t-stats for group A.
     """
-    print("\n=== t 值對照（34 檔固定清單 vs 時點 S&P 500）===", flush=True)
-    print("34 檔是組 A，每個月用同一份名單。PIT 每個月只用該月底的成分股。", flush=True)
-    header = f"{'因子':<16}{'34 檔 t':>10}{'PIT t':>10}"
+    print("\n=== t-stat comparison (fixed 34-name list vs point-in-time S&P 500) ===", flush=True)
+    print("The 34 names are group A, the same list every month. PIT uses only that month-end's constituents.", flush=True)
+    header = f"{'Factor':<16}{'Group A t':>10}{'PIT t':>10}"
     print(header, flush=True)
     for row in pit_rows:
         print(
@@ -560,20 +561,20 @@ def _print_t_comparison(pit_rows: list[dict[str, Any]], group_a_t: dict[str, flo
 
 def _slice_cache(symbol: str, start: date, end: date) -> pd.DataFrame | None:
     """
-    只讀本地價量快取，不向 yfinance 發請求。
+    Read the local price cache only. No request is sent to yfinance.
 
-    參數:
-        symbol: Yahoo 代號。
-        start: 切片起日（含）。
-        end: 切片迄日（含）。
+    Args:
+        symbol: Yahoo symbol.
+        start: Slice start (inclusive).
+        end: Slice end (inclusive).
 
-    回傳:
-        區間內的 OHLCV。沒有快取或切出來是空的則為 None。
+    Returns:
+        OHLCV inside the range. None when there is no cache or the slice is empty.
     """
     try:
         cached = _read_cache(symbol)
-    except Exception as exc:  # noqa: BLE001 — 單檔壞快取不中斷其餘代號
-        _log.warning("讀取 %s 價量快取失敗: %s", symbol, exc)
+    except Exception as exc:  # noqa: BLE001 — one broken cache does not stop the other symbols
+        _log.warning("Failed to read the price cache for %s: %s", symbol, exc)
         return None
     if cached is None or cached.empty:
         return None
@@ -591,61 +592,61 @@ def _load_prices(
     cache_only: bool,
 ) -> dict[str, pd.DataFrame]:
     """
-    取得這些代號的價量。單一代號失敗就略過，留給缺口報告。
+    Fetch prices for these symbols. A single symbol that fails is skipped and left for the gap report.
 
-    參數:
-        symbols: Yahoo 代號。
-        start: 請求起日。
-        end: 請求迄日。
-        cache_only: True 時只讀本地快取，不補下載。
+    Args:
+        symbols: Yahoo symbols.
+        start: Request start.
+        end: Request end.
+        cache_only: When True, only the local cache is read and nothing is downloaded to fill gaps.
 
-    回傳:
-        成功取得、且已整理過的 OHLCV。
+    Returns:
+        OHLCV that was fetched and already prepared.
     """
     panel: dict[str, pd.DataFrame] = {}
     if cache_only:
         for symbol in symbols:
             frame = _slice_cache(symbol, start, end)
             if frame is None:
-                _log.warning("%s 沒有可用的本地價量", symbol)
+                _log.warning("%s has no usable local prices", symbol)
                 continue
             panel[symbol] = frame
     else:
         try:
             downloaded = build_ohlcv_panel([*symbols, _CALENDAR], start, end)
         except Exception:
-            _log.exception("價量面板建立失敗")
+            _log.exception("Failed to build the price panel")
             raise
         panel = {symbol: frame for symbol, frame in downloaded.items() if symbol != _CALENDAR}
     loaded: dict[str, pd.DataFrame] = {}
     for symbol, frame in panel.items():
         if frame is None or frame.empty:
-            _log.warning("%s 沒有可用價量", symbol)
+            _log.warning("%s has no usable prices", symbol)
             continue
         try:
             loaded[symbol] = _prepare_ohlcv(frame)
         except Exception:
-            _log.exception("%s 價量整理失敗", symbol)
+            _log.exception("Failed to prepare prices for %s", symbol)
     return loaded
 
 
 def run_confirmed(plan: dict[str, Any], *, cache_only: bool) -> int:
     """
-    讀取價量、做前視偏差檢查，再印 PIT 的 IC 與 34 檔 t 值對照。
+    Load prices, run the lookahead check, then print the PIT IC and the 34-name t-stat comparison.
 
-    參數:
-        plan: build_plan 的結果。確認後才呼叫。
-        cache_only: True 時不向 yfinance 補下載。
+    Args:
+        plan: The result of build_plan. Called only after confirmation.
+        cache_only: When True, missing prices are not downloaded from yfinance.
 
-    回傳:
-        0 表示檢查通過且表已印出；1 表示中止。
+    Returns:
+        0 when the check passed and the tables were printed; 1 when the run stops.
     """
     symbols: list[str] = plan["symbols"]
     if cache_only:
-        print(f"\n使用本地價量快取，不重新下載。要讀取 {len(symbols)} 檔。", flush=True)
+        print(f"\nUsing the local price cache. Nothing will be downloaded again. {len(symbols)} names to read.", flush=True)
     else:
         print(
-            f"\n開始下載。要處理 {len(symbols)} 檔，其中 {len(plan['pending'])} 檔不在可用快取裡。",
+            f"\nStarting the download. {len(symbols)} names to process, of which {len(plan['pending'])} are not in a usable cache.",
             flush=True,
         )
     try:
@@ -656,10 +657,10 @@ def run_confirmed(plan: dict[str, Any], *, cache_only: bool) -> int:
             cache_only=cache_only,
         )
     except Exception as exc:
-        print(f"價量讀取失敗，研究中止：{exc}", flush=True)
+        print(f"Failed to read prices. Research stopped: {exc}", flush=True)
         return 1
     if not histories:
-        print("沒有任何一檔取得價量，研究中止。", flush=True)
+        print("No name returned prices. Research stopped.", flush=True)
         return 1
     _print_gap_report(plan, set(histories))
 
@@ -673,49 +674,49 @@ def run_confirmed(plan: dict[str, Any], *, cache_only: bool) -> int:
         try:
             factor_frame, _missing = compute_factors(history, score_dates=score_dates)
         except Exception:
-            _log.exception("%s 因子計算失敗，這檔不進入橫斷面", symbol)
+            _log.exception("Factor calculation failed for %s; this name is left out of the cross section", symbol)
             continue
         factors[symbol] = factor_frame
     if not factors:
-        print("因子全部計算失敗，研究中止。", flush=True)
+        print("Every factor calculation failed. Research stopped.", flush=True)
         return 1
     dropped = sorted(set(histories) - set(factors))
     if dropped:
-        print("這些代號有價量，但因子計算失敗，不進入橫斷面：" + ", ".join(dropped), flush=True)
+        print("These symbols have prices, but factor calculation failed, so they are left out of the cross section: " + ", ".join(dropped), flush=True)
     checked = {symbol: histories[symbol] for symbol in factors}
 
     if not _check_indicator_api(checked, factors):
-        print("子分數與 indicators.calculate_tech_score 不一致，研究中止。", flush=True)
+        print("Subscores do not match indicators.calculate_tech_score. Research stopped.", flush=True)
         return 1
 
     print(
-        f"\n開始前視偏差檢查：{len(factors)} 檔 × {len(signals)} 個訊號月。"
-        "截斷到該月底的因子值必須與完整資料相同。",
+        f"\nStarting the lookahead check: {len(factors)} names x {len(signals)} signal months. "
+        "Factor values truncated to that month-end must match the full history.",
         flush=True,
     )
     try:
         mismatches = verify_no_lookahead(checked, factors, signals)
     except Exception:
-        _log.exception("前視偏差檢查發生例外")
-        print("前視偏差檢查發生例外，研究中止。", flush=True)
+        _log.exception("The lookahead check raised an exception")
+        print("The lookahead check raised an exception. Research stopped.", flush=True)
         return 1
     if mismatches:
         print(
-            f"前視偏差檢查失敗：{len(mismatches)} 處不一致。研究中止，不計算 IC。",
+            f"Lookahead check failed: {len(mismatches)} mismatches. Research stopped. IC was not computed.",
             flush=True,
         )
         for row in mismatches[:12]:
-            detail = f"，{row['detail']}" if row.get("detail") else ""
+            detail = f", {row['detail']}" if row.get("detail") else ""
             print(
                 f"  {row['factor']}  {row['month']}  {row['ticker']}"
-                f"  完整資料={row['full']}  截斷至該月={row['truncated']}{detail}",
+                f"  full={row['full']}  truncated={row['truncated']}{detail}",
                 flush=True,
             )
         if len(mismatches) > 12:
-            print(f"  …其餘 {len(mismatches) - 12} 筆省略", flush=True)
+            print(f"  ... {len(mismatches) - 12} more rows omitted", flush=True)
         return 1
     print(
-        f"前視偏差檢查通過：{len(_FACTORS)} 個因子 × {len(signals)} 個訊號月 × {len(factors)} 檔。",
+        f"Lookahead check passed: {len(_FACTORS)} factors x {len(signals)} signal months x {len(factors)} names.",
         flush=True,
     )
 
@@ -725,10 +726,10 @@ def run_confirmed(plan: dict[str, Any], *, cache_only: bool) -> int:
     else:
         spy = load_ohlcv(_CALENDAR, fetch_start, fetch_end)
     if spy is None or spy.empty:
-        print("沒有 SPY 價量，無法計算持有期報酬。", flush=True)
+        print("No SPY prices, so holding-period returns cannot be computed.", flush=True)
         return 1
     master = _prepare_ohlcv(spy).index
-    # 因子表沒有 Close。收盤價用同一批代號的價量，而且只留因子有算出來的股票。
+    # Factor frames have no Close. Closes come from the same symbols' prices, and only names whose factors were computed are kept.
     closes = {symbol: histories[symbol]["Close"].reindex(master) for symbol in factors}
     close = pd.DataFrame(closes, index=master)
     ic, used_counts = _pit_monthly_ic(
@@ -743,8 +744,8 @@ def run_confirmed(plan: dict[str, Any], *, cache_only: bool) -> int:
     try:
         group_a_t = _group_a_t(cache_only=cache_only)
     except Exception:
-        _log.exception("34 檔 t 值重算失敗")
-        print("34 檔 t 值重算失敗，PIT 的表已印出，並排對照沒有完成。", flush=True)
+        _log.exception("Recomputing t-stats for the 34 names failed")
+        print("Recomputing t-stats for the 34 names failed. The PIT table was printed. The side-by-side comparison was not finished.", flush=True)
         return 1
     _print_t_comparison(pit_rows, group_a_t)
     return 0
@@ -752,13 +753,13 @@ def run_confirmed(plan: dict[str, Any], *, cache_only: bool) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """
-    先印預估。只有明確帶 --confirm 才下載並計算。
+    Print the estimate first. Download and compute only when --confirm is passed explicitly.
 
-    參數:
-        argv: 參數列。None 時用 sys.argv。
+    Args:
+        argv: Argument list. sys.argv is used when this is None.
 
-    回傳:
-        0 表示預估已印出，或研究完成；1 表示中止。
+    Returns:
+        0 when the estimate was printed or the research finished; 1 when the run stops.
     """
     logging.getLogger("backtest_universe_sp500").setLevel(logging.WARNING)
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -768,8 +769,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         plan = build_plan()
     except Exception as exc:
-        _log.exception("時點名單或預估失敗")
-        print(f"無法完成預估，研究中止：{exc}", flush=True)
+        _log.exception("The point-in-time list or the estimate failed")
+        print(f"The estimate could not be finished. Research stopped: {exc}", flush=True)
         return 1
     _print_estimate(plan)
     if not confirmed:

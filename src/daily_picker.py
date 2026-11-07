@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-每日選股整合管線：整合技術面、基本面、估值與預測，輸出 Top picks。
+Daily stock-picking pipeline. Combines technicals, fundamentals, valuation, and the forecast into top picks.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/daily_picker.py
 """
 
@@ -18,13 +18,13 @@ from typing import Any
 import pandas as pd
 from tqdm import tqdm
 
-# 從專案根目錄載入 config（直接執行本檔時 sys.path 預設為 src/）
+# Load config from the project root (running this file directly puts src/ on sys.path)
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from config import FILTER_THRESHOLDS, PICKS_DIR, SCORE_WEIGHTS, TICKER_LIST  # noqa: E402
-try:  # 直接執行（python src/daily_picker.py）
+try:  # Run as a script (python src/daily_picker.py)
     from data_collector import collect_all_stocks  # type: ignore
     from entry_price import calculate_entry_prices, get_status_emoji, get_status_label_cn  # type: ignore
     from fundamentals import analyze_fundamentals, get_stock_sector  # type: ignore
@@ -32,7 +32,7 @@ try:  # 直接執行（python src/daily_picker.py）
     from predictor import predict_price  # type: ignore
     from sentiment import analyze_ticker_sentiment  # type: ignore
     from valuation import calculate_fair_value  # type: ignore
-except ModuleNotFoundError:  # 作為套件匯入（import src.daily_picker）
+except ModuleNotFoundError:  # Imported as a package (import src.daily_picker)
     from src.data_collector import collect_all_stocks  # type: ignore
     from src.entry_price import calculate_entry_prices, get_status_emoji, get_status_label_cn  # type: ignore
     from src.fundamentals import analyze_fundamentals, get_stock_sector  # type: ignore
@@ -51,7 +51,7 @@ if not _LOG.handlers:
 
 
 def _to_float_or_none(value: Any) -> float | None:
-    """嘗試將值轉為 float，無效時回傳 None。"""
+    """Convert a value to float, or return None when it is not numeric."""
     try:
         if value is None:
             return None
@@ -62,7 +62,7 @@ def _to_float_or_none(value: Any) -> float | None:
 
 def _volume_score(vol_ratio: float | None) -> float:
     """
-    量能分數（0-100）。
+    Volume score from 0 to 100.
 
     - >1.5: 80
     - 1.0~1.5: 70
@@ -89,46 +89,46 @@ def _build_pick_reasons(
     news: dict[str, Any],
     entry_price: dict[str, Any] | None = None,
 ) -> list[str]:
-    """依規則建立中文選股理由（基本面／技術／新聞／進場價等；至多約 6 條）。"""
+    """Build pick reasons from fundamentals, technicals, news, and entry price. At most about six."""
     reasons: list[str] = []
 
     if fundamental.get("signals", {}).get("growth") == "高速成長":
-        reasons.append("營收與盈餘雙雙高速成長")
+        reasons.append("Revenue and earnings are both growing quickly")
     if valuation.get("valuation_signal") == "undervalued":
         up = _to_float_or_none(valuation.get("upside_pct")) or 0.0
-        reasons.append(f"估值低估，上漲空間 +{up:.1f}%")
+        reasons.append(f"Valuation looks cheap, upside +{up:.1f}%")
     if technical.get("signals", {}).get("macd") == "金叉":
-        reasons.append("MACD 黃金交叉")
+        reasons.append("MACD golden cross")
     if technical.get("signals", {}).get("ma_trend") == "多頭排列":
-        reasons.append("均線多頭排列")
+        reasons.append("Moving averages are stacked bullishly")
     if (_to_float_or_none(prediction.get("expected_return_pct")) or 0.0) > 10:
         x = _to_float_or_none(prediction.get("expected_return_pct")) or 0.0
-        reasons.append(f"Prophet 預測 30 天 +{x:.1f}%")
+        reasons.append(f"Prophet 30-day forecast +{x:.1f}%")
     if (_to_float_or_none(fundamental.get("sub_scores", {}).get("profitability")) or 0.0) > 85:
-        reasons.append("獲利品質優異")
+        reasons.append("Profitability is strong")
     if sector in ("semiconductor", "ai_software"):
-        reasons.append("AI/半導體熱門賽道")
+        reasons.append("In a favored AI or semiconductor group")
     if news.get("sentiment_label") == "強烈看漲":
-        reasons.append("近期新聞面強勁利多")
+        reasons.append("Recent news is strongly positive")
     if news.get("sentiment_label") == "偏多" and int(news.get("positive_count", 0) or 0) >= 3:
-        reasons.append("近期出現多則利多新聞")
+        reasons.append("Several recent articles are positive")
     if (_to_float_or_none(news.get("sentiment_score")) or 0.0) > 0.3 and int(news.get("news_count", 0) or 0) >= 3:
-        reasons.append(f"新聞情緒正向（{int(news.get('positive_count', 0) or 0)}則正面）")
+        reasons.append(f"News sentiment is positive ({int(news.get('positive_count', 0) or 0)} positive articles)")
 
     if isinstance(entry_price, dict) and entry_price:
         if entry_price.get("current_status") == "buy_now":
-            reasons.append("✓ 當前股價已進入進場區間")
+            reasons.append("✓ Price is already inside the entry zone")
         dist_fair = _to_float_or_none((entry_price.get("distance") or {}).get("to_fair_value_pct"))
         if dist_fair is not None and dist_fair > 30:
-            reasons.append(f"✓ 距合理價還有 {dist_fair:.1f}% 上漲空間")
+            reasons.append(f"✓ Still {dist_fair:.1f}% below fair value")
         cur_ep = _to_float_or_none(entry_price.get("current_price"))
         batches = entry_price.get("batch_plan") if isinstance(entry_price.get("batch_plan"), list) else []
         if len(batches) >= 3 and cur_ep is not None and cur_ep > 0:
             p3 = _to_float_or_none(batches[2].get("price"))
             if p3 is not None and p3 < cur_ep * 0.85:
-                reasons.append("✓ 提供清晰的分批建倉路徑")
+                reasons.append("✓ The staged-entry path is clear")
 
-    # 去重且限制最多 6 條（含進場價規則）
+    # Drop duplicates and keep at most six, including the entry-price rules
     uniq = list(dict.fromkeys(reasons))
     return uniq[:6]
 
@@ -140,76 +140,76 @@ def _build_risk_factors(
     prediction: dict[str, Any],
     news: dict[str, Any],
 ) -> list[str]:
-    """依規則建立最多 3 條中文風險提示。"""
+    """Build at most three risk notes from the same rules."""
     risks: list[str] = []
 
     if technical.get("signals", {}).get("rsi") == "超買":
-        risks.append("RSI 超買，短期回調風險")
+        risks.append("RSI is overbought; a short-term pullback is a risk")
     if valuation.get("valuation_signal") == "overvalued":
         up = _to_float_or_none(valuation.get("upside_pct")) or 0.0
-        risks.append(f"估值偏高 {abs(up):.1f}%")
+        risks.append(f"Valuation looks rich by {abs(up):.1f}%")
     if fundamental.get("signals", {}).get("financial_health") in ("需注意", "風險"):
-        risks.append("財務槓桿偏高")
+        risks.append("Financial leverage is high")
     if prediction.get("confidence") == "low":
-        risks.append("預測不確定性高")
+        risks.append("The forecast is uncertain")
     if technical.get("signals", {}).get("macd") == "死叉":
-        risks.append("MACD 死叉")
+        risks.append("MACD death cross")
     if news.get("sentiment_label") == "強烈看空":
-        risks.append("近期新聞面明顯利空")
+        risks.append("Recent news is clearly negative")
     if news.get("sentiment_label") == "偏空" and int(news.get("negative_count", 0) or 0) >= 2:
-        risks.append("近期出現多則負面新聞")
+        risks.append("Several recent articles are negative")
     if int(news.get("news_count", 0) or 0) == 0:
-        risks.append("近期無相關新聞可供參考")
+        risks.append("No recent news to use as context")
 
     return list(dict.fromkeys(risks))[:3]
 
 
 def analyze_single_stock(ticker: str, raw_data: dict[str, Any]) -> dict[str, Any]:
     """
-    分析單一股票並回傳整合結果。
+    Analyze one stock and return the combined result.
 
-    參數:
-        ticker: 股票代號。
-        raw_data: fetch_stock_data 的回傳結果。
+    Args:
+        ticker: Ticker symbol.
+        raw_data: The dict returned by fetch_stock_data.
 
-    回傳:
-        包含四大模組結果、綜合分數、篩選結果、理由與風險的字典。
+    Returns:
+        Technicals, fundamentals, valuation, forecast, composite score, filter result, reasons, and risks.
     """
     sym = ticker.strip().upper()
     if not isinstance(raw_data, dict):
-        raise ValueError(f"{sym} raw_data 格式錯誤")
+        raise ValueError(f"{sym} raw_data has the wrong shape")
 
     info = raw_data.get("info") if isinstance(raw_data.get("info"), dict) else {}
     price_history = raw_data.get("price_history")
     current_price = _to_float_or_none(raw_data.get("current_price"))
     if not isinstance(price_history, pd.DataFrame):
-        raise ValueError(f"{sym} 缺少 price_history")
+        raise ValueError(f"{sym} is missing price_history")
     if current_price is None or current_price <= 0:
-        raise ValueError(f"{sym} current_price 無效")
+        raise ValueError(f"{sym} has an invalid current_price")
 
     name = raw_data.get("name") if isinstance(raw_data.get("name"), str) else sym
     sector = get_stock_sector(sym)
 
-    _LOG.debug("分析 %s：開始技術面", sym)
+    _LOG.debug("Analyzing %s: technicals", sym)
     df_ind = calculate_indicators(price_history)
     technical = calculate_tech_score(df_ind)
 
-    _LOG.debug("分析 %s：開始基本面", sym)
+    _LOG.debug("Analyzing %s: fundamentals", sym)
     fundamental = analyze_fundamentals(sym, info)
 
-    _LOG.debug("分析 %s：開始估值", sym)
+    _LOG.debug("Analyzing %s: valuation", sym)
     valuation = calculate_fair_value(sym, info, current_price)
 
-    _LOG.debug("分析 %s：開始預測", sym)
+    _LOG.debug("Analyzing %s: forecast", sym)
     prediction = predict_price(sym, price_history)
 
-    _LOG.debug("分析 %s：開始新聞情緒", sym)
+    _LOG.debug("Analyzing %s: news sentiment", sym)
     news_result = analyze_ticker_sentiment(sym)
 
     vol_ratio = _to_float_or_none(technical.get("current_values", {}).get("vol_ratio"))
     vol_score = _volume_score(vol_ratio)
 
-    # 納入新聞情緒後的綜合分數（權重集中於 config.SCORE_WEIGHTS 管理）
+    # Composite including news. Weights live in config.SCORE_WEIGHTS.
     composite = (
         (_to_float_or_none(technical.get("total_score")) or 0.0) * SCORE_WEIGHTS["technical"]
         + (_to_float_or_none(fundamental.get("total_score")) or 0.0) * SCORE_WEIGHTS["fundamental"]
@@ -219,7 +219,7 @@ def analyze_single_stock(ticker: str, raw_data: dict[str, Any]) -> dict[str, Any
         + (_to_float_or_none(news_result.get("score")) or 50.0) * SCORE_WEIGHTS["news"]
     )
 
-    # 篩選門檻（全過才通過）
+    # Filter thresholds. Every condition has to pass.
     passes_filter = (
         (_to_float_or_none(technical.get("total_score")) or 0.0) > FILTER_THRESHOLDS["min_tech_score"]
         and (_to_float_or_none(fundamental.get("total_score")) or 0.0) > FILTER_THRESHOLDS["min_fund_score"]
@@ -273,26 +273,26 @@ def analyze_single_stock(ticker: str, raw_data: dict[str, Any]) -> dict[str, Any
 
 def pick_top_stocks(all_data: dict[str, Any], top_n: int = 3) -> dict[str, Any]:
     """
-    由批量原始資料選出每日 Top N。
+    Pick the daily top N from a batch of raw stock payloads.
 
-    回傳:
-        date、picks、market_overview、all_scores。
+    Returns:
+        date, picks, market_overview, and all_scores.
     """
     analyzed: list[dict[str, Any]] = []
-    for key, raw in tqdm(all_data.items(), desc="綜合分析", unit="檔"):
+    for key, raw in tqdm(all_data.items(), desc="Combined analysis", unit="name"):
         if not isinstance(raw, dict):
             continue
         sym = str(raw.get("ticker") or key).upper()
         try:
             analyzed.append(analyze_single_stock(sym, raw))
         except Exception as e:
-            _LOG.error("%s 分析失敗：%s", sym, e)
+            _LOG.error("%s analysis failed: %s", sym, e)
 
     analyzed.sort(key=lambda x: x.get("composite_score", 0.0), reverse=True)
     passed = [x for x in analyzed if x.get("passes_filter")]
     picks = passed[:top_n]
 
-    # 市場概覽（SPY）
+    # Market snapshot from SPY
     spy_price = None
     spy_change_pct = None
     spy_raw = all_data.get("SPY")
@@ -333,7 +333,7 @@ def pick_top_stocks(all_data: dict[str, Any], top_n: int = 3) -> dict[str, Any]:
 
 
 def _json_safe(obj: Any) -> Any:
-    """遞迴轉換為可 JSON 序列化格式。"""
+    """Recursively convert a value into something JSON can serialize."""
     if isinstance(obj, (str, int, float, bool)) or obj is None:
         return obj
     if isinstance(obj, Path):
@@ -354,7 +354,7 @@ def _json_safe(obj: Any) -> Any:
 
 def save_daily_picks(result: dict[str, Any]) -> Path:
     """
-    儲存每日選股結果至 PICKS_DIR / YYYY-MM-DD.json。
+    Save the daily picks to PICKS_DIR / YYYY-MM-DD.json.
     """
     date_str = str(result.get("date") or datetime.now().strftime("%Y-%m-%d"))
     out_dir = Path(PICKS_DIR)
@@ -367,37 +367,37 @@ def save_daily_picks(result: dict[str, Any]) -> Path:
 
 
 def _print_top3_report(result: dict[str, Any]) -> None:
-    """輸出 Top picks 報告。"""
-    print("\n=== 每日 Top 選股報告 ===")
-    print(f"日期: {result.get('date')}")
+    """Print the top-picks report."""
+    print("\n=== Daily top picks ===")
+    print(f"Date: {result.get('date')}")
     m = result.get("market_overview", {})
     print(
-        f"市場概覽: SPY={m.get('spy_price')} ({m.get('spy_change_pct')}%), "
-        f"分析 {m.get('total_analyzed')} 檔, 通過篩選 {m.get('passed_filter')} 檔"
+        f"Market: SPY={m.get('spy_price')} ({m.get('spy_change_pct')}%), "
+        f"analyzed {m.get('total_analyzed')}, passed filter {m.get('passed_filter')}"
     )
     print("-" * 80)
     for i, p in enumerate(result.get("picks", []), start=1):
         print(
-            f"{i}. {p['ticker']} {p['name']} | 價格 {p['current_price']:.2f} | "
-            f"綜合分數 {p['composite_score']:.2f}"
+            f"{i}. {p['ticker']} {p['name']} | price {p['current_price']:.2f} | "
+            f"composite {p['composite_score']:.2f}"
         )
         print(
-            f"   技術={p['technical']['total_score']:.1f} "
-            f"基本={p['fundamental']['total_score']:.1f} "
-            f"估值={p['valuation']['score']:.1f} "
-            f"預測報酬={p['prediction']['expected_return_pct']:.2f}%"
+            f"   technical={p['technical']['total_score']:.1f} "
+            f"fundamental={p['fundamental']['total_score']:.1f} "
+            f"valuation={p['valuation']['score']:.1f} "
+            f"forecast return={p['prediction']['expected_return_pct']:.2f}%"
         )
         news = p.get("news", {}) or {}
         print(
-            f"   新聞面：{news.get('sentiment_label', '無新聞')} "
-            f"（共 {int(news.get('news_count', 0) or 0)} 則："
-            f"正面 {int(news.get('positive_count', 0) or 0)} / "
-            f"負面 {int(news.get('negative_count', 0) or 0)}）"
+            f"   news: {news.get('sentiment_label', '無新聞')} "
+            f"({int(news.get('news_count', 0) or 0)} articles: "
+            f"positive {int(news.get('positive_count', 0) or 0)} / "
+            f"negative {int(news.get('negative_count', 0) or 0)})"
         )
         if p.get("pick_reasons"):
-            print("   選股理由: " + "；".join(p["pick_reasons"]))
+            print("   reasons: " + "; ".join(p["pick_reasons"]))
         if p.get("risk_factors"):
-            print("   風險提示: " + "；".join(p["risk_factors"]))
+            print("   risks: " + "; ".join(p["risk_factors"]))
         ep = p.get("entry_price") if isinstance(p.get("entry_price"), dict) else {}
         if ep:
             est = str(ep.get("current_status") or "")
@@ -409,8 +409,8 @@ def _print_top3_report(result: dict[str, Any]) -> None:
             agg = _to_float_or_none(ev.get("aggressive")) or 0.0
             reasoning = str(ep.get("reasoning") or "").strip()
             print(
-                f"   🎯 進場建議：{emoji} {label}\n"
-                f"      保守 ${cons:.2f} | 標準 ${std:.2f} | 積極 ${agg:.2f}\n"
+                f"   Entry: {emoji} {label}\n"
+                f"      conservative ${cons:.2f} | standard ${std:.2f} | aggressive ${agg:.2f}\n"
                 f"      {reasoning}"
             )
         print("-" * 80)
@@ -418,19 +418,19 @@ def _print_top3_report(result: dict[str, Any]) -> None:
 
 def run_daily_pipeline(force_refresh: bool = False) -> dict[str, Any]:
     """
-    每日管線：
-    1) 抓取 50 支股票（首次含 Prophet 可能約 5-10 分鐘）
-    2) 綜合分析並選出 Top 3
-    3) 儲存 JSON
-    4) 印出報告
+    Daily pipeline:
+    1) Fetch the universe (the first run, including Prophet, can take about 5-10 minutes)
+    2) Score everything and pick the top 3
+    3) Save JSON
+    4) Print the report
     """
-    _LOG.info("開始每日管線；首次完整跑 50 支含 Prophet 可能約 5-10 分鐘，快取可顯著加速後續執行。")
+    _LOG.info("Starting the daily pipeline. A first full run with Prophet can take about 5-10 minutes; the cache speeds later runs.")
     est_minutes = max(4, int(round(len(TICKER_LIST) * 0.1)))
-    _LOG.info("開始新聞情緒分析，預計約 %s 分鐘（含 FinBERT 推論與快取讀寫）。", est_minutes)
+    _LOG.info("Starting news sentiment. Expect about %s minutes, including FinBERT and cache reads.", est_minutes)
     all_data = collect_all_stocks(tickers=TICKER_LIST, force_refresh=force_refresh)
     result = pick_top_stocks(all_data, top_n=3)
     out_path = save_daily_picks(result)
-    _LOG.info("已儲存每日選股結果：%s", out_path)
+    _LOG.info("Saved daily picks: %s", out_path)
 
     try:
         try:
@@ -447,10 +447,10 @@ def run_daily_pipeline(force_refresh: bool = False) -> dict[str, Any]:
             )
         record_daily_picks(result)
         update_stats = update_actuals()
-        _LOG.info("Track Record 更新：%s", update_stats)
+        _LOG.info("Track record updated: %s", update_stats)
         save_performance_snapshot()
     except Exception as e:  # noqa: BLE001
-        _LOG.warning("Track Record 更新失敗（不影響主流程）: %s", e)
+        _LOG.warning("Track record update failed (the main pipeline still finished): %s", e)
 
     _print_top3_report(result)
     return result

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-估值模組：計算合理股價、潛在漲跌空間與估值訊號。
+Valuation: a fair price, the upside or downside, and a valuation signal.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/valuation.py
 """
 
@@ -13,20 +13,20 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# 從專案根目錄載入 config（直接執行本檔時 sys.path 預設為 src/）
+# Load config from the project root (sys.path defaults to src/ when this file is run directly).
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from config import VALUATION_PARAMS  # noqa: E402
-try:  # 直接執行（python src/valuation.py）
+try:  # Run directly (python src/valuation.py)
     from fundamentals import get_stock_sector  # type: ignore
-except ModuleNotFoundError:  # 作為套件匯入（import src.valuation）
+except ModuleNotFoundError:  # Imported as a package (import src.valuation)
     from src.fundamentals import get_stock_sector  # type: ignore
 
 
 def _to_float_or_none(value: Any) -> float | None:
-    """將輸入轉為 float；若無法轉換或為 NaN/Inf 則回傳 None。"""
+    """Turn an input into a float. None when it cannot be converted or is NaN or Inf."""
     if value is None:
         return None
     try:
@@ -44,10 +44,10 @@ def _normalize_weights(
     analyst_price: float | None,
 ) -> tuple[float, float, float]:
     """
-    依可用估值方法重分配權重。
+    Redistribute weights across the valuation methods that are available.
 
-    基礎權重：P/E 40%、PEG 30%、分析師目標價 30%。
-    不可用方法（價格為 None）之權重，按比例併入可用方法。
+    Base weights: P/E 40%, PEG 30%, analyst target 30%.
+    The weight of an unavailable method (price is None) is spread across the available methods in proportion.
     """
     base = {"pe": 0.40, "peg": 0.30, "analyst": 0.30}
     available = {
@@ -67,14 +67,14 @@ def _normalize_weights(
 
 def _valuation_score(upside_pct: float) -> int:
     """
-    估值吸引力評分（0-100）。
+    Valuation attractiveness score (0-100).
 
-    - upside > +30%：95 分
-    - +15% ~ +30%：85 分
-    - +5% ~ +15%：70 分
-    - -5% ~ +5%：55 分
-    - -15% ~ -5%：40 分
-    - < -15%：25 分
+    - upside above +30%: 95
+    - +15% to +30%: 85
+    - +5% to +15%: 70
+    - -5% to +5%: 55
+    - -15% to -5%: 40
+    - below -15%: 25
     """
     if upside_pct > 30:
         return 95
@@ -95,23 +95,23 @@ def calculate_fair_value(
     current_price: float,
 ) -> dict[str, Any]:
     """
-    使用 P/E、PEG、分析師目標價三種方法估算合理股價並加權整合。
+    Estimate a fair price from P/E, PEG, and the analyst target, then combine them with weights.
 
-    參數:
-        ticker: 股票代號。
-        info: data_collector 回傳之 info 字典。
-        current_price: 當前股價。
+    Args:
+        ticker: Ticker symbol.
+        info: The info dict returned by data_collector.
+        current_price: Current price.
 
-    回傳:
-        含 fair_value、upside_pct、valuation_signal、methods、score 的估值結果。
+    Returns:
+        A valuation result with fair_value, upside_pct, valuation_signal, methods, and score.
     """
     sym = ticker.strip().upper()
     safe_info = info if isinstance(info, dict) else {}
     curr = _to_float_or_none(current_price)
     if curr is None or curr <= 0:
-        raise ValueError("current_price 必須為正數")
+        raise ValueError("current_price must be positive")
 
-    # 以 SECTOR_MAP 反查產業；未知時使用 consumer 作為保守預設
+    # Look up the sector from SECTOR_MAP. Unknown names use consumer as a conservative default.
     sector_key = get_stock_sector(sym)
     if sector_key == "unknown":
         sector_key = "consumer"
@@ -127,7 +127,7 @@ def calculate_fair_value(
     earnings_growth = _to_float_or_none(safe_info.get("earningsGrowth"))
     analyst_target = _to_float_or_none(safe_info.get("targetMeanPrice"))
 
-    # 方法 A：本益比法（反推 EPS，再乘產業合理 P/E 區間）
+    # Method A: P/E. Back out EPS, then multiply by the sector's fair P/E band.
     eps = None
     pe_low_price = None
     pe_mid_price = None
@@ -138,7 +138,7 @@ def calculate_fair_value(
         pe_mid_price = eps * pe_mid
         pe_high_price = eps * pe_high
 
-    # 若 trailingPE 不可用，為了「至少一法可回傳」可用 forwardPE 估算 EPS
+    # If trailingPE is unavailable, forwardPE can estimate EPS so at least one method can return a price.
     if eps is None and forward_pe is not None and forward_pe > 0:
         eps = curr / forward_pe
         pe_low_price = eps * pe_low
@@ -147,23 +147,23 @@ def calculate_fair_value(
 
     pe_fair = pe_mid_price
 
-    # 方法 B：PEG 估值（成長率無效或負值則棄用）
+    # Method B: PEG. Drop it when growth is missing or negative.
     peg_fair = None
     peg_growth = None
     peg_target_pe = None
     if eps is not None and earnings_growth is not None and earnings_growth >= 0:
-        growth_pct = min(earnings_growth * 100.0, 50.0)  # >50% 上限截斷
+        growth_pct = min(earnings_growth * 100.0, 50.0)  # Cap growth above 50%.
         peg_growth = growth_pct
         peg_target_pe = min(growth_pct, pe_high * 1.2)
         if peg_target_pe > 0:
             peg_fair = eps * peg_target_pe
 
-    # 方法 C：分析師目標價
+    # Method C: analyst target price.
     analyst_fair = analyst_target if analyst_target is not None and analyst_target > 0 else None
 
     w_pe, w_peg, w_ana = _normalize_weights(pe_fair, peg_fair, analyst_fair)
     if w_pe == 0 and w_peg == 0 and w_ana == 0:
-        raise ValueError(f"{sym} 沒有可用估值方法（缺少 P/E、成長率與分析師目標價）")
+        raise ValueError(f"{sym} has no usable valuation method (missing P/E, growth, and analyst target)")
 
     fair_value = 0.0
     if pe_fair is not None:
@@ -213,13 +213,13 @@ def calculate_fair_value(
 
 def analyze_valuation_batch(all_data: dict[str, Any]) -> list[dict[str, Any]]:
     """
-    批量估值並依 upside_pct 由高到低排序（最被低估者在前）。
+    Value a batch and sort by upside_pct, high to low (the most undervalued names first).
 
-    參數:
-        all_data: collect_all_stocks() 回傳的字典。
+    Args:
+        all_data: The dict returned by collect_all_stocks().
 
-    回傳:
-        估值結果列表；單檔失敗時略過。
+    Returns:
+        A list of valuation results. A single failure is skipped.
     """
     rows: list[dict[str, Any]] = []
     for key, payload in all_data.items():
@@ -239,15 +239,15 @@ def analyze_valuation_batch(all_data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _fmt_price(x: float | None) -> str:
-    """格式化價格欄位。"""
+    """Format a price field."""
     if x is None:
         return "-"
     return f"{x:.2f}"
 
 
 def _print_table(rows: list[dict[str, Any]]) -> None:
-    """輸出簡易估值摘要表。"""
-    headers = ("ticker", "current", "fair", "upside%", "signal", "PE範圍(low-mid-high)")
+    """Print a short valuation summary table."""
+    headers = ("ticker", "current", "fair", "upside%", "signal", "PE low-mid-high")
     widths = (8, 10, 10, 10, 12, 26)
     line = " ".join(h.ljust(w) for h, w in zip(headers, widths, strict=True))
     print(line)
@@ -276,24 +276,24 @@ if __name__ == "__main__":
 
     from data_collector import fetch_stock_data
 
-    # 需求指定：原本提及 KO，最終改用清單中的 XOM
+    # The request originally mentioned KO. The final list uses XOM, which is on the universe.
     tickers = ["NVDA", "AAPL", "TSM", "JPM", "XOM"]
     results: list[dict[str, Any]] = []
     for t in tickers:
         raw = fetch_stock_data(t, force_refresh=False)
         if not raw:
-            print(f"[{t}] 抓取失敗，跳過。")
+            print(f"[{t}] Fetch failed, skipping.")
             continue
         info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
         curr = _to_float_or_none(raw.get("current_price"))
         if curr is None or curr <= 0:
-            print(f"[{t}] current_price 無效，跳過。")
+            print(f"[{t}] current_price is invalid, skipping.")
             continue
         try:
             results.append(calculate_fair_value(t, info, curr))
         except Exception as e:
-            print(f"[{t}] 估值失敗：{e}")
+            print(f"[{t}] Valuation failed: {e}")
 
     results.sort(key=lambda x: x["upside_pct"], reverse=True)
-    print("\n=== 估值比較 ===")
+    print("\n=== Valuation comparison ===")
     _print_table(results)

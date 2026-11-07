@@ -1,27 +1,27 @@
 #!/bin/bash
-# 每日美股分析 + Dashboard 一鍵啟動腳本
+# One-command start for the daily US-stock analysis and the dashboard
 
 cd "$(dirname "$0")"
 
 echo "=========================================="
-echo "美股分析 Dashboard 啟動"
+echo "US stock analysis dashboard"
 echo "=========================================="
 
-# 第一步：跑 daily_picker 產生當日分析（含快取）
+# Step 1: run daily_picker to produce today's analysis (uses the cache)
 echo ""
-echo "[1/2] 執行每日選股分析（第一次約 5-8 分鐘，後續快取秒過）..."
+echo "[1/2] Running the daily pick (about 5-8 minutes the first time; later runs hit the cache)..."
 python src/daily_picker.py
 
 if [ $? -ne 0 ]; then
-    echo "❌ daily_picker 執行失敗，請檢查錯誤訊息"
+    echo "daily_picker failed. Check the error above."
     exit 1
 fi
 
-# 第二步：啟動 Dashboard
+# Step 2: start the dashboard
 echo ""
-echo "[2/2] 啟動 Dashboard..."
+echo "[2/2] Starting the dashboard..."
 echo "=========================================="
-echo "Dashboard 網址：http://localhost:8501"
-echo "按 Ctrl+C 可停止"
+echo "Dashboard URL: http://localhost:8501"
+echo "Press Ctrl+C to stop"
 echo "=========================================="
 streamlit run dashboard/app.py

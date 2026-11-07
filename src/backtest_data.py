@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-回測用價量矩陣：把多檔 OHLCV 抓成可對齊的日線面板，並做本地快取。
+Price panel for backtests: fetch OHLCV for many names into a daily panel that can be aligned, with a local cache.
 
-技術面分數與報酬都用同一份還原價（auto_adjust=True）。
-未還原的收盤價遇到分割會像崩盤，回測報酬會失真。
+Technical scores and returns both use the same adjusted prices (auto_adjust=True).
+An unadjusted close looks like a crash on a split, and backtest returns would be wrong.
 
-快取目錄：data/backtest_cache/ohlcv/{TICKER}.parquet
-已涵蓋請求區間就不再打 yfinance。
+Cache directory: data/backtest_cache/ohlcv/{TICKER}.parquet
+A cache that already covers the requested range is not sent to yfinance again.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/backtest_data.py
 """
 
@@ -44,20 +44,20 @@ _OHLCV_DIR = Path(DATA_DIR) / "backtest_cache" / "ohlcv"
 _OHLCV_COLUMNS = ("Open", "High", "Low", "Close", "Volume")
 _YF_CALL_SLEEP_SEC = 0.7
 _YF_RETRY_DELAYS = (1.0, 2.0, 4.0)
-# 快取最後一天比請求迄日早這麼多天以內，視為已涵蓋（吸收週末與尚未收盤）
+# If the cache ends within this many calendar days of the requested end, it counts as covering the range (weekends and a session that has not closed yet).
 _CACHE_END_TOLERANCE_DAYS = 7
 
 
 def _coerce_date(value: date | datetime | str, name: str) -> date:
     """
-    把 date / datetime / ISO 字串轉成 date。
+    Turn a date, datetime, or ISO string into a date.
 
-    參數:
-        value: 日期輸入。
-        name: 參數名稱，用於錯誤訊息。
+    Args:
+        value: Date input.
+        name: Parameter name, used in the error message.
 
-    回傳:
-        datetime.date。
+    Returns:
+        datetime.date.
     """
     if isinstance(value, datetime):
         return value.date()
@@ -68,19 +68,19 @@ def _coerce_date(value: date | datetime | str, name: str) -> date:
         try:
             return date.fromisoformat(text[:10])
         except ValueError as exc:
-            raise ValueError(f"{name} 不是合法日期：{value!r}，請用 YYYY-MM-DD") from exc
-    raise TypeError(f"{name} 須為 date，收到 {type(value).__name__}")
+            raise ValueError(f"{name} is not a valid date: {value!r}. Use YYYY-MM-DD") from exc
+    raise TypeError(f"{name} must be a date, got {type(value).__name__}")
 
 
 def _normalize_ohlcv(raw: pd.DataFrame) -> pd.DataFrame:
     """
-    整理 yfinance 日線：去掉時區、只留 OHLCV、同一天留最後一筆。
+    Clean a yfinance daily frame: drop the timezone, keep only OHLCV, and keep the last row when a day is duplicated.
 
-    參數:
-        raw: yfinance history 的結果。
+    Args:
+        raw: The result of yfinance history.
 
-    回傳:
-        索引為無時區日期的 OHLCV。空表表示這份資料不能用。
+    Returns:
+        OHLCV indexed by a timezone-naive date. An empty frame means this data cannot be used.
     """
     if raw is None or raw.empty:
         return pd.DataFrame(columns=list(_OHLCV_COLUMNS))
@@ -104,19 +104,19 @@ def _normalize_ohlcv(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def _cache_path(ticker: str) -> Path:
-    """單一代號的 parquet 路徑。"""
+    """Parquet path for one symbol."""
     return _OHLCV_DIR / f"{ticker.upper()}.parquet"
 
 
 def _read_cache(ticker: str) -> pd.DataFrame | None:
-    """讀取本地日線。壞檔回傳 None，不中斷其他代號。"""
+    """Read local daily bars. A bad file returns None and does not stop the other symbols."""
     path = _cache_path(ticker)
     if not path.is_file():
         return None
     try:
         cached = pd.read_parquet(path)
     except Exception as exc:  # noqa: BLE001
-        _log.warning("讀取 %s 價量快取失敗，將重新下載: %s", ticker, exc)
+        _log.warning("Failed to read the price cache for %s; it will be downloaded again: %s", ticker, exc)
         return None
     cached = _normalize_ohlcv(cached)
     if cached.empty:
@@ -125,7 +125,7 @@ def _read_cache(ticker: str) -> pd.DataFrame | None:
 
 
 def _cache_covers(cached: pd.DataFrame, start: date, end: date) -> bool:
-    """快取的日期是否包住請求區間。迄日允許晚幾個日曆天。"""
+    """Whether the cache dates cover the requested range. The end may be a few calendar days late."""
     first = cached.index.min().date()
     last = cached.index.max().date()
     return first <= start and last >= end - timedelta(days=_CACHE_END_TOLERANCE_DAYS)
@@ -133,15 +133,15 @@ def _cache_covers(cached: pd.DataFrame, start: date, end: date) -> bool:
 
 def _download_ohlcv(ticker: str, start: date, end: date) -> pd.DataFrame | None:
     """
-    向 yfinance 抓單一代號日線，失敗重試 3 次。
+    Fetch daily bars for one symbol from yfinance. Retry 3 times on failure.
 
-    參數:
-        ticker: 股票代號。
-        start: 起始日（含）。
-        end: 結束日（含）。yfinance 的 end 是不含，所以這裡加一天。
+    Args:
+        ticker: Ticker symbol.
+        start: Start date (inclusive).
+        end: End date (inclusive). yfinance end is exclusive, so one day is added here.
 
-    回傳:
-        整理後的 OHLCV；三次都失敗或沒有資料則為 None。
+    Returns:
+        Cleaned OHLCV. None when all three attempts fail or there is no data.
     """
     last_err: Exception | None = None
     end_exclusive = end + timedelta(days=1)
@@ -157,46 +157,46 @@ def _download_ohlcv(ticker: str, start: date, end: date) -> pd.DataFrame | None:
             )
             frame = _normalize_ohlcv(raw)
             if frame.empty:
-                last_err = ValueError("沒有可用的收盤價")
+                last_err = ValueError("no usable close")
             else:
                 return frame
-        except Exception as exc:  # noqa: BLE001 — 單檔失敗改重試
+        except Exception as exc:  # noqa: BLE001 — a single-name failure is retried
             last_err = exc
         if attempt < 2:
             time.sleep(_YF_RETRY_DELAYS[attempt])
-    _log.warning("抓取 %s 價量失敗（已重試 3 次）: %s", ticker, last_err)
+    _log.warning("Failed to fetch prices for %s after 3 attempts: %s", ticker, last_err)
     return None
 
 
 def load_ohlcv(ticker: str, start: date, end: date) -> pd.DataFrame | None:
     """
-    取得單一代號在區間內的 OHLCV。本地快取夠用就不再下載。
+    Load OHLCV for one symbol inside the range. A local cache that is enough is not downloaded again.
 
-    參數:
-        ticker: 股票代號。
-        start: 起始日（含）。
-        end: 結束日（含）。
+    Args:
+        ticker: Ticker symbol.
+        start: Start date (inclusive).
+        end: End date (inclusive).
 
-    回傳:
-        區間內的 OHLCV；完全沒有資料則為 None。
+    Returns:
+        OHLCV inside the range. None when there is no data at all.
     """
     symbol = ticker.upper().strip()
     start_d = _coerce_date(start, "start")
     end_d = _coerce_date(end, "end")
     if start_d > end_d:
-        raise ValueError(f"{symbol} 的 start ({start_d}) 晚於 end ({end_d})")
+        raise ValueError(f"start ({start_d}) is after end ({end_d}) for {symbol}")
 
     cached = _read_cache(symbol)
     if cached is not None and _cache_covers(cached, start_d, end_d):
         sliced = cached.loc[pd.Timestamp(start_d) : pd.Timestamp(end_d)]
-        _log.debug("使用價量快取 %s（%s 列）", symbol, len(sliced))
+        _log.debug("Using the price cache for %s (%s rows)", symbol, len(sliced))
         return sliced if not sliced.empty else None
 
     _OHLCV_DIR.mkdir(parents=True, exist_ok=True)
     downloaded = _download_ohlcv(symbol, start_d, end_d)
     if downloaded is None:
         if cached is not None:
-            _log.warning("%s 重新下載失敗，沿用較舊的快取", symbol)
+            _log.warning("Redownload failed for %s; the older cache is reused", symbol)
             sliced = cached.loc[pd.Timestamp(start_d) : pd.Timestamp(end_d)]
             return sliced if not sliced.empty else None
         return None
@@ -209,7 +209,7 @@ def load_ohlcv(ticker: str, start: date, end: date) -> pd.DataFrame | None:
     try:
         merged.to_parquet(_cache_path(symbol), index=True)
     except Exception as exc:  # noqa: BLE001
-        _log.warning("寫入 %s 價量快取失敗，仍使用記憶體資料: %s", symbol, exc)
+        _log.warning("Failed to write the price cache for %s; the in-memory data is still used: %s", symbol, exc)
     sliced = merged.loc[pd.Timestamp(start_d) : pd.Timestamp(end_d)]
     return sliced if not sliced.empty else None
 
@@ -220,18 +220,18 @@ def build_ohlcv_panel(
     end: date,
 ) -> dict[str, pd.DataFrame]:
     """
-    建立多檔 OHLCV 面板，供技術面分數與報酬共用。
+    Build a multi-name OHLCV panel shared by technical scores and returns.
 
-    某一檔抓不到就略過並記警告，不讓整組回測停掉。
-    呼叫端若需要均線暖機，應自行把 start 往前移。
+    A name that cannot be fetched is skipped with a warning. It does not stop the whole backtest.
+    If the caller needs moving-average warmup, it should move start earlier itself.
 
-    參數:
-        tickers: 股票代號。重複與空白會去掉。
-        start: 起始日（含）。
-        end: 結束日（含）。
+    Args:
+        tickers: Ticker symbols. Duplicates and blanks are dropped.
+        start: Start date (inclusive).
+        end: End date (inclusive).
 
-    回傳:
-        {代號: OHLCV DataFrame}。失敗的代號不會出現在字典裡。
+    Returns:
+        {symbol: OHLCV DataFrame}. A failed symbol does not appear in the dict.
     """
     start_d = _coerce_date(start, "start")
     end_d = _coerce_date(end, "end")
@@ -248,20 +248,20 @@ def build_ohlcv_panel(
         try:
             frame = load_ohlcv(symbol, start_d, end_d)
         except Exception as exc:  # noqa: BLE001
-            _log.warning("建立 %s 價量失敗: %s", symbol, exc)
+            _log.warning("Failed to build prices for %s: %s", symbol, exc)
             frame = None
         if frame is None or frame.empty:
-            _log.warning("%s 在 %s ~ %s 沒有可用價量，這檔不會進入回測", symbol, start_d, end_d)
+            _log.warning("%s has no usable prices from %s to %s, so this name will not enter the backtest", symbol, start_d, end_d)
             continue
         panel[symbol] = frame
         _log.info(
-            "%s 價量 %s 列（%s ~ %s）",
+            "%s prices: %s rows (%s to %s)",
             symbol,
             len(frame),
             frame.index.min().date().isoformat(),
             frame.index.max().date().isoformat(),
         )
-    _log.info("價量面板完成：請求 %s 檔，成功 %s 檔", len(symbols), len(panel))
+    _log.info("Price panel finished: requested %s names, succeeded for %s", len(symbols), len(panel))
     return panel
 
 
@@ -271,12 +271,12 @@ if __name__ == "__main__":
     panel = build_ohlcv_panel(["SPY", "NVDA"], start, today)
     for symbol, frame in panel.items():
         print(
-            f"{symbol}: {len(frame)} 列, "
-            f"{frame.index.min().date()} ~ {frame.index.max().date()}, "
-            f"最後收盤 {float(frame['Close'].iloc[-1]):.2f}",
+            f"{symbol}: {len(frame)} rows, "
+            f"{frame.index.min().date()} to {frame.index.max().date()}, "
+            f"last close {float(frame['Close'].iloc[-1]):.2f}",
             flush=True,
         )
     missing = [symbol for symbol in ("SPY", "NVDA") if symbol not in panel]
     if missing:
-        print("缺少:", ", ".join(missing), flush=True)
+        print("Missing:", ", ".join(missing), flush=True)
         sys.exit(1)

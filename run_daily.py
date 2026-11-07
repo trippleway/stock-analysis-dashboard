@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-每日排程入口：
-- python run_daily.py --once   立即執行一次
-- python run_daily.py          進入排程循環（每日美東 09:30）
+Daily schedule entry point:
+- python run_daily.py --once   run once immediately
+- python run_daily.py          enter the schedule loop (09:30 US Eastern every day)
 """
 
 from __future__ import annotations
@@ -37,33 +37,33 @@ TZ_ET = ZoneInfo("US/Eastern")
 
 
 def _run_once_job() -> None:
-    """封裝一次任務執行，避免排程中斷。"""
+    """Wrap one job run so a failure does not stop the scheduler."""
     try:
-        LOG.info("開始每日選股任務（含 Prophet，50 支可能約 5-10 分鐘）")
+        LOG.info("Starting the daily pick job (includes Prophet; 50 names can take about 5-10 minutes)")
         run_daily_pipeline(force_refresh=False)
-        LOG.info("每日選股任務完成")
+        LOG.info("Daily pick job finished")
     except Exception as e:  # noqa: BLE001
-        LOG.exception("每日選股任務失敗：%s", e)
+        LOG.exception("Daily pick job failed: %s", e)
 
 
 def _schedule_loop() -> None:
-    """每日美東 09:30 排程循環。"""
+    """Schedule loop for 09:30 US Eastern every day."""
     schedule.every().day.at("09:30", "US/Eastern").do(_run_once_job)
-    LOG.info("排程已啟動：每天美東 09:30 執行。")
+    LOG.info("Schedule started: runs every day at 09:30 US Eastern.")
     while True:
         schedule.run_pending()
         time.sleep(30)
 
 
 def main() -> None:
-    """CLI 入口。"""
-    parser = argparse.ArgumentParser(description="每日選股排程器")
-    parser.add_argument("--once", action="store_true", help="立即執行一次後結束")
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(description="Daily stock-pick scheduler")
+    parser.add_argument("--once", action="store_true", help="Run once immediately and then exit")
     args = parser.parse_args()
 
     now_et = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-    LOG.info("目前時間（本機）：%s", now_et)
-    LOG.info("提示：首次完整跑 50 支含 Prophet 可能約 5-10 分鐘，快取可加速後續執行。")
+    LOG.info("Current local time: %s", now_et)
+    LOG.info("Note: the first full run of 50 names with Prophet can take about 5-10 minutes. The cache speeds up later runs.")
 
     if args.once:
         _run_once_job()

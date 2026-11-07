@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-基本面分析：依 yfinance info 欄位計算子分數與加權總分。
+Fundamental analysis: subscores and a weighted total from yfinance info fields.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/fundamentals.py
 """
 
@@ -13,14 +13,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# 從專案根目錄載入 config（直接執行本檔時 sys.path 預設為 src/）
+# Load config from the project root (sys.path defaults to src/ when this file is run directly).
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from config import SECTOR_BASE_SCORE, SECTOR_MAP  # noqa: E402
 
-# 基本面總分權重
+# Weights for the fundamental total.
 _WEIGHT_GROWTH = 0.30
 _WEIGHT_PROFIT = 0.30
 _WEIGHT_HEALTH = 0.20
@@ -28,7 +28,7 @@ _WEIGHT_INDUSTRY = 0.20
 
 
 def _to_float_or_none(value: Any) -> float | None:
-    """將任意輸入轉成 float；無效或 nan/inf 則 None。"""
+    """Turn any input into a float. Invalid values, nan, and inf become None."""
     if value is None:
         return None
     try:
@@ -42,13 +42,13 @@ def _to_float_or_none(value: Any) -> float | None:
 
 def get_stock_sector(ticker: str) -> str:
     """
-    依 config.SECTOR_MAP 反查股票所屬產業鍵名。
+    Look up the sector key for a stock from config.SECTOR_MAP.
 
-    參數:
-        ticker: 股票代號（不分大小寫）。
+    Args:
+        ticker: Ticker symbol (case insensitive).
 
-    回傳:
-        例如 'semiconductor'、'finance'；找不到則 'unknown'。
+    Returns:
+        For example 'semiconductor' or 'finance'. 'unknown' when it is not found.
     """
     sym = ticker.strip().upper()
     for sector_key, tickers in SECTOR_MAP.items():
@@ -59,39 +59,39 @@ def get_stock_sector(ticker: str) -> str:
 
 def _score_growth(rev: float | None, ear: float | None) -> tuple[float, str]:
     """
-    成長性子分數：綜合營收成長與盈餘成長（通常為小數，如 0.15 代表 15%）。
+    Growth subscore from revenue growth and earnings growth (usually a decimal, so 0.15 means 15%).
 
-    評分規則對照：
-    - 兩者皆 > 30%：95 分（高速成長）
-    - 兩者皆 > 15%：85 分
-    - 兩者皆 > 5%：70 分（穩健成長）
-    - 一正一負或都在 0-5%：55 分（低成長）
-    - 兩者皆 < 0：30 分（衰退）
-    - 資料缺失（None）：50 分中性值
+    Score rules:
+    - Both above 30%: 95. The signal token is left as-is because daily_picker compares it.
+    - Both above 15%: 85
+    - Both above 5%: 70 (steady growth)
+    - One positive and one negative, or both in 0-5%: 55 (low growth)
+    - Both below 0: 30 (declining)
+    - Missing data (None): a neutral 50
     """
     if rev is None or ear is None:
-        return 50.0, "低成長"
+        return 50.0, "Low growth"
 
     if rev > 0.30 and ear > 0.30:
         return 95.0, "高速成長"
     if rev > 0.15 and ear > 0.15:
-        return 85.0, "穩健成長"
+        return 85.0, "Steady growth"
     if rev > 0.05 and ear > 0.05:
-        return 70.0, "穩健成長"
+        return 70.0, "Steady growth"
 
     one_pos_one_neg = (rev > 0 > ear) or (ear > 0 > rev)
     both_low_band = 0.0 <= rev <= 0.05 and 0.0 <= ear <= 0.05
     if one_pos_one_neg or both_low_band:
-        return 55.0, "低成長"
+        return 55.0, "Low growth"
 
     if rev < 0.0 and ear < 0.0:
-        return 30.0, "衰退"
+        return 30.0, "Declining"
 
-    return 55.0, "低成長"
+    return 55.0, "Low growth"
 
 
 def _gross_margin_points(g: float | None) -> int:
-    """毛利率加分（對照區間給分）；缺失給中間檔 15 分。"""
+    """Gross-margin points by band. A missing value gets the middle band, 15 points."""
     if g is None:
         return 15
     if g > 0.50:
@@ -106,7 +106,7 @@ def _gross_margin_points(g: float | None) -> int:
 
 
 def _profit_margin_points(p: float | None) -> int:
-    """淨利率加分；缺失給中間檔 15 分。"""
+    """Net-margin points. A missing value gets the middle band, 15 points."""
     if p is None:
         return 15
     if p > 0.25:
@@ -121,7 +121,7 @@ def _profit_margin_points(p: float | None) -> int:
 
 
 def _roe_points(r: float | None) -> int:
-    """ROE 加分；缺失給中間檔 20 分（介於 10-15% 與 15-25% 之間）。"""
+    """ROE points. A missing value gets the middle band, 20 points (between 10-15% and 15-25%)."""
     if r is None:
         return 20
     if r > 0.25:
@@ -141,39 +141,39 @@ def _score_profitability(
     roe: float | None,
 ) -> tuple[float, str]:
     """
-    獲利品質子分數：三項加總加分 + 基礎分 20，最高 100。
+    Profitability subscore: the three point bands plus a base of 20, capped at 100.
 
-    規則對照：
-    - grossMargins 分檔加 25/20/15/10/5
-    - profitMargins 分檔加 25/20/15/10/5
-    - ROE 分檔加 30/25/20/10/5
-    - 三項基礎分 20 分
-    - 資料缺失時各項給中間分（於各 *_points 內處理）
+    Rules:
+    - grossMargins adds 25/20/15/10/5 by band
+    - profitMargins adds 25/20/15/10/5 by band
+    - ROE adds 30/25/20/10/5 by band
+    - The three items start from a base of 20
+    - Missing data gets the middle band inside each *_points helper
     """
     raw = 20 + _gross_margin_points(gross) + _profit_margin_points(profit) + _roe_points(roe)
     score = float(max(0.0, min(100.0, raw)))
 
     if score >= 85:
-        sig = "優秀"
+        sig = "Excellent"
     elif score >= 70:
-        sig = "良好"
+        sig = "Good"
     elif score >= 55:
-        sig = "一般"
+        sig = "Average"
     else:
-        sig = "偏弱"
+        sig = "Weak"
     return score, sig
 
 
 def _debt_component(dte_raw: float | None) -> float:
     """
-    負債權益比分項（0-50）：API 常為「百分比數字」，先除以 100 再與門檻比較。
+    Debt-to-equity component (0-50). The API often returns a percent number, so it is divided by 100 before the thresholds.
 
-    規則對照：
-    - < 0.5（<50%）：50 分
-    - 0.5-1.0：40 分
-    - 1.0-2.0：30 分
-    - > 2.0：20 分
-    - 缺失：30 分
+    Rules:
+    - Below 0.5 (below 50%): 50
+    - 0.5-1.0: 40
+    - 1.0-2.0: 30
+    - Above 2.0: 20
+    - Missing: 30
     """
     if dte_raw is None:
         return 30.0
@@ -189,14 +189,14 @@ def _debt_component(dte_raw: float | None) -> float:
 
 def _current_ratio_component(cr: float | None) -> float:
     """
-    流動比分項（0-50）。
+    Current-ratio component (0-50).
 
-    規則對照：
-    - > 2.0：50 分
-    - 1.5-2.0：40 分
-    - 1.0-1.5：30 分
-    - < 1.0：15 分
-    - 缺失：30 分
+    Rules:
+    - Above 2.0: 50
+    - 1.5-2.0: 40
+    - 1.0-1.5: 30
+    - Below 1.0: 15
+    - Missing: 30
     """
     if cr is None:
         return 30.0
@@ -211,19 +211,19 @@ def _current_ratio_component(cr: float | None) -> float:
 
 def _score_financial_health(dte_raw: float | None, cr: float | None) -> tuple[float, str]:
     """
-    財務健康子分數：負債權益比與流動比各占 0-50，合計 0-100。
+    Financial-health subscore: debt-to-equity and current ratio each contribute 0-50, for a total of 0-100.
 
-    綜合解讀（信號）：
-    - 合計高代表槓桿與流動性較穩健
+    The signal reads the combined score. A high total means leverage and liquidity look steadier.
+    The "needs attention" and "risk" tokens are left as-is because daily_picker compares them.
     """
     d = _debt_component(dte_raw)
     c = _current_ratio_component(cr)
     total = max(0.0, min(100.0, d + c))
 
     if total >= 80:
-        sig = "健康"
+        sig = "Healthy"
     elif total >= 60:
-        sig = "尚可"
+        sig = "Acceptable"
     elif total >= 40:
         sig = "需注意"
     else:
@@ -236,12 +236,12 @@ def _score_industry_outlook(
     info: dict[str, Any],
 ) -> tuple[float, str]:
     """
-    產業前景子分數：產業基礎分 + 本益比前瞻調整。
+    Industry-outlook subscore: a sector base score plus a forward P/E adjustment.
 
-    規則對照：
-    - 基礎分 = 50 + SECTOR_BASE_SCORE[sector]
-    - 若 forwardPE < trailingPE（預期盈餘成長）：+10
-    - 最高 100 分封頂
+    Rules:
+    - Base = 50 + SECTOR_BASE_SCORE[sector]
+    - If forwardPE < trailingPE (earnings are expected to grow): +10
+    - Capped at 100
     """
     sector_key = get_stock_sector(ticker)
     base_bonus = SECTOR_BASE_SCORE.get(sector_key, 0)
@@ -255,24 +255,24 @@ def _score_industry_outlook(
     score = max(0.0, min(100.0, score))
 
     if score >= 70:
-        sig = "熱門"
+        sig = "In favor"
     elif score >= 58:
-        sig = "中性"
+        sig = "Neutral"
     else:
-        sig = "承壓"
+        sig = "Under pressure"
     return score, sig
 
 
 def analyze_fundamentals(ticker: str, info: dict[str, Any]) -> dict[str, Any]:
     """
-    依單一股票的 info 字典計算基本面加權總分與子分數、細節與中文信號。
+    Compute the weighted fundamental total, subscores, details, and signals from one stock's info dict.
 
-    參數:
-        ticker: 股票代號。
-        info: data_collector 回傳之 info 子字典（可含 None 欄位）。
+    Args:
+        ticker: Ticker symbol.
+        info: The info sub-dict returned by data_collector. Fields may be None.
 
-    回傳:
-        含 ticker、total_score、sub_scores、details、signals 的 dict。
+    Returns:
+        A dict with ticker, total_score, sub_scores, details, and signals.
     """
     sym = ticker.strip().upper()
     safe_info = info if isinstance(info, dict) else {}
@@ -341,13 +341,13 @@ def analyze_fundamentals(ticker: str, info: dict[str, Any]) -> dict[str, Any]:
 
 def analyze_all_stocks(all_data: dict[str, Any]) -> list[dict[str, Any]]:
     """
-    批量分析 collect_all_stocks() 回傳的字典，依 total_score 由高到低排序。
+    Analyze the dict returned by collect_all_stocks() and sort by total_score, high to low.
 
-    參數:
-        all_data: 鍵為代號、值為 fetch 結果 dict 或 None。
+    Args:
+        all_data: Keys are symbols. Values are fetch-result dicts or None.
 
-    回傳:
-        每個元素為 analyze_fundamentals 的結果 dict。
+    Returns:
+        One analyze_fundamentals result dict per element.
     """
     rows: list[dict[str, Any]] = []
     for key, payload in all_data.items():
@@ -363,14 +363,14 @@ def analyze_all_stocks(all_data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _pct(x: float | None, *, digits: int = 1) -> str:
-    """將小數比例格式化成百分比字串；None 則 '-'。"""
+    """Format a decimal ratio as a percent string. None becomes '-'."""
     if x is None:
         return "-"
     return f"{x * 100:.{digits}f}%"
 
 
 def _print_results_table(results: list[dict[str, Any]]) -> None:
-    """以固定欄寬印出基本面摘要表。"""
+    """Print a fundamental summary table with fixed column widths."""
     headers = (
         "Ticker",
         "Total",
@@ -415,19 +415,19 @@ if __name__ == "__main__":
     from data_collector import fetch_stock_data
 
     tickers = ["NVDA", "AAPL", "TSM", "JPM", "XOM"]
-    print("抓取資料中…")
+    print("Fetching data...")
     results: list[dict[str, Any]] = []
     for t in tickers:
         raw = fetch_stock_data(t, force_refresh=False)
         if not raw:
-            print(f"[{t}] 抓取失敗，跳過。")
+            print(f"[{t}] Fetch failed, skipping.")
             continue
         info = raw.get("info") or {}
         results.append(analyze_fundamentals(t, info))
 
-    print("\n=== 基本面評分（總分與子分數）===\n")
+    print("\n=== Fundamental scores (total and subscores) ===\n")
     _print_results_table(results)
 
-    print("\n=== 各股子分數與信號 ===\n")
+    print("\n=== Subscores and signals by name ===\n")
     for r in results:
         print(f"{r['ticker']}: total={r['total_score']} | sub={r['sub_scores']} | signals={r['signals']}")

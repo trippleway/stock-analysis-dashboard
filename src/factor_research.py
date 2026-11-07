@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-組 A 的因子研究：只算月度 rank IC，不做回測、也不選股。
+Factor research for Group A: monthly rank IC only. No backtest and no stock picking.
 
-區間沿用 config 的固定窗口（2023-09 至 2026-09）。母體是組 A。
-每個月底的因子值，與該月持有期（下一個月底為止）報酬做 Spearman 相關。
-34 檔都放進橫斷面；某一檔當天沒有因子或沒有報酬，才從該月剔除。
+The window is the fixed config window (2023-09 through 2026-09). The universe is Group A.
+Each month-end factor value is Spearman-correlated with the holding-period return through the next month-end.
+All 34 names go into the cross-section. A name is dropped from that month only when it has no factor or no return that day.
 
-既有五項子分數直接呼叫 indicators.py 的評分函式，各自獨立，不加權。
-新增的五個因子只用收盤價與成交量，窗口都是交易日，而且只往回看。
+The five existing subscores call the scoring functions in indicators.py, each on its own, with no weights.
+The five added factors use only close and volume. Windows are trading days, and they look backward only.
 
-最後用同一批子分數做五種加權，只比較綜合分的 rank IC。
-這是同一段資料上的事後對照，用來檢查 RSI 的方向，不挑選新權重。
+The same subscores are then combined five ways, and only the composite rank IC is compared.
+That is an ex-post comparison on one sample, used to check the sign of RSI, not to pick a new weight set.
 
-前視偏差檢查：把資料截斷到訊號月月底再重算，必須與完整資料在同一個月底的值相同。
-有任何不一致就中止，不印 IC。
+Lookahead check: truncate the data at the signal month-end and recompute. The value must match the full series on that same month-end.
+Any mismatch stops the run. IC is not printed.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/factor_research.py
 """
 
@@ -65,66 +65,66 @@ if not _log.handlers:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-# 日曆與現有 rank IC 相同，用 SPY 的交易日當月底與持有區間。
+# The calendar matches the existing rank IC: SPY trading days are the month-ends and holding windows.
 _CALENDAR = "SPY"
-# 252 個交易日大約要一年。固定往前多取，讓第一個訊號月的長窗口有機會算得出來。
-# 這個長度不是拿來調整 IC 的參數。
+# 252 trading days is about a year. Extra history is fetched so the first signal month's long window can be computed.
+# This length is not a knob for the IC.
 _WARMUP_DAYS = 450
-# 規格裡的窗口，單位都是該股票自己的交易日。
+# Windows from the spec. Each is in that stock's own trading days.
 _LOOKBACK_DAYS = 252
 _SKIP_DAYS = 21
 _VOL_DAYS = 60
 _VOLUME_SHORT = 20
 _VOLUME_LONG = 60
-# 截斷重算與完整資料的容許誤差。真正用到未來會差一個價格跳動，遠大於這個值。
+# Tolerance when a truncated recompute is compared with the full series. A real lookahead is a price tick, far larger than this.
 _LOOKAHEAD_ATOL = 1e-8
-# calculate_tech_score 會 round 到小數兩位。差一個評分檔（5 分以上）仍會被抓到。
+# calculate_tech_score rounds to two decimals. A one-bucket gap (5 points or more) is still caught.
 _API_ATOL = 0.011
 _GROUP_SIZE = 34
 _MIN_CORR_MONTHS = 3
 
-# 表與相關矩陣都用這個順序。IC 表印出前再依 |t| 排序。
+# Tables and the correlation matrix use this order. The IC table is re-sorted by |t| before printing.
 _FACTORS: list[tuple[str, str]] = [
-    ("rsi", "RSI 子分數"),
-    ("macd", "MACD 子分數"),
-    ("bollinger", "布林子分數"),
-    ("ma_trend", "均線子分數"),
-    ("volume", "成交量子分數"),
-    ("mom_12_1", "12-1 動能"),
-    ("reversal_21", "短期反轉"),
-    ("low_vol_60", "低波動"),
-    ("high_52w", "52 週高點接近度"),
-    ("volume_trend", "量能趨勢"),
+    ("rsi", "RSI subscore"),
+    ("macd", "MACD subscore"),
+    ("bollinger", "Bollinger subscore"),
+    ("ma_trend", "Moving-average subscore"),
+    ("volume", "Volume subscore"),
+    ("mom_12_1", "12-1 momentum"),
+    ("reversal_21", "Short-term reversal"),
+    ("low_vol_60", "Low volatility"),
+    ("high_52w", "52-week high proximity"),
+    ("volume_trend", "Volume trend"),
 ]
 _SHORT = {
     "rsi": "RSI",
     "macd": "MACD",
-    "bollinger": "布林",
-    "ma_trend": "均線",
-    "volume": "成交量",
+    "bollinger": "Bollinger",
+    "ma_trend": "MA",
+    "volume": "Volume",
     "mom_12_1": "12-1",
-    "reversal_21": "反轉",
-    "low_vol_60": "低波動",
-    "high_52w": "52週高",
-    "volume_trend": "量能",
+    "reversal_21": "Reversal",
+    "low_vol_60": "Low vol",
+    "high_52w": "52w high",
+    "volume_trend": "Vol trend",
 }
 _SUBSCORE_KEYS = ("rsi", "macd", "bollinger", "ma_trend", "volume")
 
 
 def _prepare_ohlcv(frame: pd.DataFrame) -> pd.DataFrame:
     """
-    整理成無時區、一天一列的 OHLCV。
+    Normalize to timezone-naive OHLCV with one row per day.
 
-    參數:
-        frame: 至少要有 Open、High、Low、Close、Volume。
+    Args:
+        frame: Must include Open, High, Low, Close, and Volume.
 
-    回傳:
-        依日期排序的複本。同一天留最後一筆。
+    Returns:
+        A copy sorted by date. The last row is kept when a day is duplicated.
     """
     required = {"Open", "High", "Low", "Close", "Volume"}
     missing = required - set(frame.columns)
     if missing:
-        raise ValueError(f"價量缺少欄位: {sorted(missing)}")
+        raise ValueError(f"Price frame is missing columns: {sorted(missing)}")
     out = frame.loc[:, ["Open", "High", "Low", "Close", "Volume"]].copy()
     out.index = _as_timestamp_index(out.index)
     out = out[~out.index.duplicated(keep="last")].sort_index()
@@ -135,17 +135,18 @@ def _prepare_ohlcv(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _score_position(ind: pd.DataFrame, i: int) -> tuple[dict[str, float], dict[str, bool]]:
     """
-    用 indicators.py 的五個評分函式，給單一交易日的子分數。
+    Score one trading day with the five scoring functions in indicators.py.
 
-    分數只看當天與前一個交易日，不加權。指標還沒算出來時，評分函式回傳中性 50，
-    這裡照單全收，同時記下輸入是不是缺的，方便事後分辨「真的 50 分」和「還沒有指標」。
+    The score looks only at today and the previous trading day, with no weights.
+    When an indicator is not ready, the scorer returns a neutral 50. That value is kept,
+    and the missing input is recorded so a real 50 can be told apart from a missing indicator.
 
-    參數:
-        ind: calculate_indicators 的結果，已排序。
-        i: 列位置。
+    Args:
+        ind: Sorted result of calculate_indicators.
+        i: Row position.
 
-    回傳:
-        (五項子分數, 該項輸入是否缺失)。
+    Returns:
+        (five subscores, whether each input is missing).
     """
     row = ind.iloc[i]
     prev = ind.iloc[i - 1] if i > 0 else None
@@ -198,23 +199,23 @@ def _score_position(ind: pd.DataFrame, i: int) -> tuple[dict[str, float], dict[s
 
 def _price_factors(frame: pd.DataFrame) -> pd.DataFrame:
     """
-    只用收盤價與成交量計算五個新因子。rolling 與 shift 都只看當天以前。
+    Compute the five new factors from close and volume only. rolling and shift look only at today and earlier.
 
-    參數:
-        frame: 已整理的 OHLCV，索引是該股票自己的交易日。
+    Args:
+        frame: Prepared OHLCV. The index is that stock's own trading days.
 
-    回傳:
-        與 frame 同索引的五欄。窗口不夠或除以 0 時為 NaN。
+    Returns:
+        Five columns on the same index as frame. NaN when the window is short or a divisor is 0.
     """
     close = frame["Close"].astype(float)
     volume = frame["Volume"].astype(float)
-    # 12-1：從 252 個交易日前持有到 21 個交易日前。最近 21 日不放進這個報酬。
+    # 12-1: hold from 252 trading days ago through 21 trading days ago. The most recent 21 days are not in this return.
     momentum = close.shift(_SKIP_DAYS) / close.shift(_LOOKBACK_DAYS) - 1.0
-    # 過去 21 日簡單報酬。預期 IC 為負，這裡不反號、也不取絕對值。
+    # Simple return over the past 21 days. The expected IC is negative. The sign is not flipped and the absolute value is not taken.
     reversal = close / close.shift(_SKIP_DAYS) - 1.0
-    # 數值愈大波動愈高。這是標準差本身，不是「低波動」的倒數。
+    # A larger number means higher volatility. This is the standard deviation itself, not the inverse of "low volatility".
     low_vol = close.pct_change().rolling(_VOL_DAYS, min_periods=_VOL_DAYS).std(ddof=1)
-    # 含當天。創高當天比值是 1。
+    # Includes today. On a new high the ratio is 1.
     near_high = close / close.rolling(_LOOKBACK_DAYS, min_periods=_LOOKBACK_DAYS).max()
     vol_trend = (
         volume.rolling(_VOLUME_SHORT, min_periods=_VOLUME_SHORT).mean()
@@ -238,16 +239,16 @@ def compute_factors(
     score_dates: pd.DatetimeIndex | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    計算一檔股票的全部因子。
+    Compute every factor for one stock.
 
-    參數:
-        frame: 原始或已整理的 OHLCV。只會使用索引上該日以前的資料。
-        score_dates: 要算子分數的日期。None 表示每個交易日都算。
-            價量因子一律整段重算，截斷檢查才對得到當天。
+    Args:
+        frame: Raw or prepared OHLCV. Only data on or before each index date is used.
+        score_dates: Dates on which to compute subscores. None means every trading day.
+            Price factors are always recomputed on the full slice so the truncation check can match that day.
 
-    回傳:
-        (因子表, 子分數輸入是否缺失)。因子表欄位順序與 _FACTORS 相同。
-        缺失表只含子分數五欄，True 代表評分函式拿到的是空值、回傳了中性 50。
+    Returns:
+        (factor table, whether each subscore input is missing). Factor columns follow _FACTORS.
+        The missing table has only the five subscore columns. True means the scorer received an empty input and returned a neutral 50.
     """
     prepared = _prepare_ohlcv(frame)
     prices = _price_factors(prepared)
@@ -281,7 +282,7 @@ def compute_factors(
 
 
 def _values_equal(left: float, right: float) -> bool:
-    """兩個因子值是否相同。兩邊都是 NaN 視為相同。"""
+    """Whether two factor values match. NaN on both sides counts as a match."""
     left_nan = pd.isna(left)
     right_nan = pd.isna(right)
     if left_nan and right_nan:
@@ -292,7 +293,7 @@ def _values_equal(left: float, right: float) -> bool:
 
 
 def _value_at(frame: pd.DataFrame, stamp: pd.Timestamp, column: str) -> float:
-    """讀取某個交易日的因子。該日沒有列，或值不是有限數，回傳 NaN。"""
+    """Read one factor on one trading day. Returns NaN when that day has no row or the value is not finite."""
     if stamp not in frame.index:
         return float("nan")
     value = frame.at[stamp, column]
@@ -302,7 +303,7 @@ def _value_at(frame: pd.DataFrame, stamp: pd.Timestamp, column: str) -> float:
 
 
 def _api_inputs_complete(ind: pd.DataFrame) -> bool:
-    """最後一列的指標是否齊全。齊全時 calculate_tech_score 不會去抓更早的有效值。"""
+    """Whether the last row's indicators are complete. When they are, calculate_tech_score does not reach back for an earlier valid value."""
     needed = (
         "RSI",
         "MACD_DIF",
@@ -330,29 +331,29 @@ def _check_indicator_api(
     factors: dict[str, pd.DataFrame],
 ) -> bool:
     """
-    確認子分數真的是 indicators.calculate_tech_score 的那五項。
+    Confirm the subscores really are the five pieces inside indicators.calculate_tech_score.
 
-    只核對最後一列指標齊全的股票。那些股票的 _last_scalar 就是最後一列，
-    不會混進更早的數值。有任一檔對不上就視為接線錯誤。
+    Only stocks whose last row has a complete indicator set are checked. For those names
+    _last_scalar is the last row, so an earlier value is not mixed in. Any mismatch is treated as a wiring error.
 
-    參數:
-        histories: 已整理的價量。
-        factors: compute_factors 的因子表，必須已包含每檔最後一個交易日。
+    Args:
+        histories: Prepared prices.
+        factors: Factor tables from compute_factors. Each name's last trading day must already be included.
 
-    回傳:
-        True 表示至少一檔核對通過，且所有可核對的股票都一致。
+    Returns:
+        True when at least one name was checked and every name that could be checked matched.
     """
     checked = 0
     for ticker, history in histories.items():
         try:
             ind = calculate_indicators(history, use_ta=False)
             if not _api_inputs_complete(ind):
-                _log.warning("%s 最後一列指標不齊，略過與 calculate_tech_score 的對照", ticker)
+                _log.warning("%s last row is missing indicators, so the calculate_tech_score check is skipped", ticker)
                 continue
             api = calculate_tech_score(ind)
             last_day = history.index[-1]
         except Exception:
-            _log.exception("%s 與 calculate_tech_score 對照時發生例外", ticker)
+            _log.exception("%s raised while being compared with calculate_tech_score", ticker)
             return False
         checked += 1
         for key in _SUBSCORE_KEYS:
@@ -362,7 +363,7 @@ def _check_indicator_api(
                 math.isfinite(got) and math.isfinite(expected) and abs(got - expected) <= _API_ATOL
             ):
                 _log.warning(
-                    "%s 的 %s 與 calculate_tech_score 不一致：研究值=%s，既有 API=%s",
+                    "%s %s does not match calculate_tech_score: research=%s, existing API=%s",
                     ticker,
                     key,
                     got,
@@ -370,9 +371,9 @@ def _check_indicator_api(
                 )
                 return False
     if checked == 0:
-        _log.warning("沒有任何一檔的最後一列指標齊全，無法確認子分數來自 indicators.py")
+        _log.warning("No name has a complete last-row indicator set, so the subscores cannot be confirmed against indicators.py")
         return False
-    _log.info("子分數與 calculate_tech_score 一致：核對 %s 檔", checked)
+    _log.info("Subscores match calculate_tech_score: checked %s names", checked)
     return True
 
 
@@ -382,27 +383,27 @@ def verify_no_lookahead(
     signals: list[pd.Timestamp],
 ) -> list[dict[str, Any]]:
     """
-    前視偏差檢查。每個因子、每個訊號月、每檔股票都比一次。
+    Lookahead check. Every factor, every signal month, and every stock is compared once.
 
-    完整資料算出的第 t 月月底值，必須等於只保留到該月底再重算的值。
-    兩端都是 NaN 算通過（窗口不夠，兩邊都不該冒出一個數）。
+    The month-end value for month t from the full series must equal the value recomputed on data kept only through that month-end.
+    NaN on both sides passes (the window is too short, and neither side should invent a number).
 
-    參數:
-        histories: 已整理、含暖機與研究區間的價量。
-        factors: 用完整資料算好的因子表。
-        signals: 訊號日，由早到晚。
+    Args:
+        histories: Prepared prices, including warmup and the research window.
+        factors: Factor tables computed on the full series.
+        signals: Signal days, earliest to latest.
 
-    回傳:
-        不一致的清單。空清單表示通過。
+    Returns:
+        The list of mismatches. An empty list means the check passed.
     """
     mismatches: list[dict[str, Any]] = []
     for pos, signal in enumerate(signals, start=1):
         stamp = pd.Timestamp(signal)
-        _log.info("前視偏差檢查 %s / %s：%s", pos, len(signals), stamp.date().isoformat())
+        _log.info("Lookahead check %s / %s: %s", pos, len(signals), stamp.date().isoformat())
         for ticker, history in histories.items():
             truncated = history.loc[history.index <= stamp]
             if not truncated.empty and truncated.index.max() > stamp:
-                raise RuntimeError(f"{ticker} 截斷到 {stamp.date()} 之後仍有資料")
+                raise RuntimeError(f"{ticker} still has data after the truncation at {stamp.date()}")
             try:
                 recomputed, _missing = compute_factors(truncated, score_dates=pd.DatetimeIndex([stamp]))
             except Exception as exc:
@@ -410,7 +411,7 @@ def verify_no_lookahead(
                     {
                         "ticker": ticker,
                         "month": stamp.strftime("%Y-%m"),
-                        "factor": "（截斷重算失敗）",
+                        "factor": "(truncated recompute failed)",
                         "full": float("nan"),
                         "truncated": float("nan"),
                         "detail": str(exc),
@@ -438,16 +439,16 @@ def verify_no_lookahead(
 
 def _holding_windows(index: pd.DatetimeIndex) -> list[dict[str, Any]]:
     """
-    沿用月度 rank IC 的訊號日與持有區間。
+    Reuse the signal days and holding windows from the monthly rank IC.
 
-    訊號日是績效區間內每個月最後一個交易日，最後一個交易日本身排除。
-    持有從訊號日的下一個交易日開始，到下一個訊號日（最後一段則到區間最後一天）。
+    A signal day is the last trading day of each month inside the performance window. The final trading day itself is excluded.
+    The hold starts the trading day after the signal and runs through the next signal (or through the last day of the window for the last stretch).
 
-    參數:
-        index: 主日曆，這裡是 SPY 的交易日。
+    Args:
+        index: Master calendar, here SPY's trading days.
 
-    回傳:
-        每個月一列，含 signal、signal_month、hold。
+    Returns:
+        One row per month, with signal, signal_month, and hold.
     """
     signals = _month_end_signals(index, BACKTEST_START, BACKTEST_END)
     windows: list[dict[str, Any]] = []
@@ -475,7 +476,7 @@ def _cross_section(
     stamp: pd.Timestamp,
     column: str,
 ) -> pd.Series:
-    """某一天、某一因子的橫斷面。索引是全部股票，沒有值的位置是 NaN。"""
+    """One day's cross-section for one factor. The index is every stock, and missing values are NaN."""
     values = {ticker: _value_at(factors[ticker], stamp, column) for ticker in tickers}
     return pd.Series(values, dtype=float)
 
@@ -487,19 +488,19 @@ def _monthly_ic(
     tickers: list[str],
 ) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
     """
-    每個因子、每個訊號月的 Spearman rank IC。
+    Spearman rank IC for every factor and every signal month.
 
-    演算法與 backtest_robustness._spearman 相同：平均名次後再算 Pearson。
-    持有期報酬與 backtest_robustness._holding_price_returns 相同。
+    The algorithm matches backtest_robustness._spearman: average ranks, then Pearson.
+    Holding-period returns match backtest_robustness._holding_price_returns.
 
-    參數:
-        factors: 每檔的因子表。
-        close: 對齊到主日曆的收盤價。
-        windows: 訊號日與持有區間。
-        tickers: 組 A 全部代號。
+    Args:
+        factors: Factor table for each name.
+        close: Closes aligned to the master calendar.
+        windows: Signal days and holding windows.
+        tickers: Every Group A symbol.
 
-    回傳:
-        (IC 表，列是訊號月、欄是因子代號, 未滿 34 檔或 IC 無法定義的月份明細)。
+    Returns:
+        (IC table, rows are signal months and columns are factor ids, plus months that did not use all 34 names or whose IC is undefined).
     """
     ic = pd.DataFrame(
         index=[window["signal_month"] for window in windows],
@@ -511,8 +512,8 @@ def _monthly_ic(
         returns = _holding_price_returns(close, window["hold"]).reindex(tickers)
         for key, _label in _FACTORS:
             scores = _cross_section(factors, tickers, window["signal"], key)
-            # 橫斷面完全相同時，Spearman 的分母是 0，相關係數本來就無法定義。
-            # 壓掉 numpy 的警告，數值仍是 NaN，不另給一個 IC。
+            # When the cross-section is constant, Spearman's denominator is 0 and the correlation is undefined.
+            # The numpy warning is suppressed. The value stays NaN. No substitute IC is filled in.
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning)
                 value, used, missing = _spearman(scores, returns)
@@ -521,11 +522,11 @@ def _monthly_ic(
             if not math.isfinite(value):
                 paired = pd.DataFrame({"score": scores, "ret": returns}).dropna()
                 if len(paired) < 3:
-                    reason = "有效樣本少於 3 檔"
+                    reason = "fewer than 3 usable names"
                 elif paired["score"].nunique(dropna=True) < 2 or paired["ret"].nunique(dropna=True) < 2:
-                    reason = "橫斷面沒有差異"
+                    reason = "no cross-sectional variation"
                 else:
-                    reason = "相關係數無法定義"
+                    reason = "correlation is undefined"
             if used != len(tickers) or reason:
                 shortfalls.append(
                     {
@@ -542,16 +543,16 @@ def _monthly_ic(
 
 def _ic_stats(series: pd.Series) -> dict[str, float | int]:
     """
-    月度 IC 的平均、樣本標準差、t 統計量與正值比例。
+    Mean, sample standard deviation, t-statistic, and positive share of monthly IC.
 
-    t = 平均 IC / (標準差 / sqrt(有效月數))。有效月是 IC 為有限值的月份。
-    少於兩個月時，標準差與 t 為 NaN。
+    t = mean IC / (standard deviation / sqrt(usable months)). A usable month is one whose IC is finite.
+    With fewer than two months, the standard deviation and t are NaN.
 
-    參數:
-        series: 單一因子的月度 IC。
+    Args:
+        series: Monthly IC for one factor.
 
-    回傳:
-        mean、std、t、positive_ratio、n、n_positive。
+    Returns:
+        mean, std, t, positive_ratio, n, and n_positive.
     """
     values = pd.to_numeric(series, errors="coerce").dropna().to_numpy(dtype=float)
     n = int(len(values))
@@ -590,29 +591,29 @@ def _ic_stats(series: pd.Series) -> dict[str, float | int]:
 
 
 def _fmt_num(value: float, digits: int) -> str:
-    """有限值格式化成固定小數；無效值顯示破折號。"""
+    """Format a finite value to a fixed number of decimals. A non-finite value is an em dash."""
     if value is None or not math.isfinite(float(value)):
         return "—"
     return f"{float(value):.{digits}f}"
 
 
 def _fmt_ratio(ratio: float, n_positive: int, n: int) -> str:
-    """IC>0 的月份比例，附上分子分母。"""
+    """Share of months with IC > 0, with the numerator and denominator."""
     if n <= 0 or not math.isfinite(ratio):
         return "—"
-    return f"{ratio * 100:.1f}%（{n_positive}/{n}）"
+    return f"{ratio * 100:.1f}% ({n_positive}/{n})"
 
 
 def _print_definitions() -> None:
-    """印出因子定義。符號如實呈現，沒有為了讓 IC 變正而改方向。"""
-    print("因子定義（交易日窗口，只用當天以前的資料）", flush=True)
+    """Print the factor definitions. Signs are shown as specified, not flipped to make IC positive."""
+    print("Factor definitions (trading-day windows, using only data through today)", flush=True)
     lines = [
-        "RSI / MACD / 布林 / 均線 / 成交量：indicators.py 的子分數，各自獨立，不加權",
-        "12-1 動能：收盤[t-21] / 收盤[t-252] - 1",
-        "短期反轉：收盤[t] / 收盤[t-21] - 1（不取絕對值、不反號）",
-        "低波動：過去 60 個交易日簡單報酬的樣本標準差（數值愈大波動愈高，不取倒數）",
-        "52 週高點接近度：當日收盤 / 過去 252 個交易日最高收盤（含當日）",
-        "量能趨勢：近 20 日均量 / 近 60 日均量",
+        "RSI / MACD / Bollinger / moving average / volume: subscores from indicators.py, each on its own, unweighted",
+        "12-1 momentum: close[t-21] / close[t-252] - 1",
+        "Short-term reversal: close[t] / close[t-21] - 1 (no absolute value, no sign flip)",
+        "Low volatility: sample standard deviation of simple returns over the past 60 trading days (larger means more volatile; not inverted)",
+        "52-week high proximity: today's close / highest close over the past 252 trading days (including today)",
+        "Volume trend: 20-day average volume / 60-day average volume",
     ]
     for line in lines:
         print(f"  {line}", flush=True)
@@ -620,13 +621,13 @@ def _print_definitions() -> None:
 
 def _print_ic_table(ic: pd.DataFrame) -> pd.DataFrame:
     """
-    印出每個因子一列的 IC 摘要，依 t 統計量絕對值由大到小排。
+    Print one IC summary row per factor, sorted by the absolute t-statistic, largest first.
 
-    參數:
-        ic: 月度 IC。列是訊號月，欄是因子代號。
+    Args:
+        ic: Monthly IC. Rows are signal months and columns are factor ids.
 
-    回傳:
-        排序後的統計表，數值仍是 float，方便呼叫端接著使用。
+    Returns:
+        The sorted statistics table. Values stay float so the caller can keep using them.
     """
     rows: list[dict[str, Any]] = []
     for key, label in _FACTORS:
@@ -659,9 +660,9 @@ def _print_ic_table(ic: pd.DataFrame) -> pd.DataFrame:
             "有效月數": [row["有效月數"] for row in rows],
         }
     )
-    print("\n=== 月度 rank IC（Spearman，依 |t| 由大到小）===", flush=True)
+    print("\n=== Monthly rank IC (Spearman, sorted by |t|) ===", flush=True)
     print(
-        "t = 平均 IC / (IC 樣本標準差 / sqrt(有效月數))。IC>0 的分母是有效月數。",
+        "t = mean IC / (IC sample standard deviation / sqrt(usable months)). The IC>0 denominator is the usable-month count.",
         flush=True,
     )
     print(display.to_string(index=False), flush=True)
@@ -670,18 +671,18 @@ def _print_ic_table(ic: pd.DataFrame) -> pd.DataFrame:
 
 def _print_correlation(ic: pd.DataFrame) -> None:
     """
-    用每月 IC 序列算因子之間的皮爾森相關。
+    Pearson correlation between factors, using each factor's monthly IC series.
 
-    這張矩陣看的是「哪些因子的預測力一起出現」，不是因子值本身的橫斷面相關。
-    兩兩只用同時有 IC 的月份；重疊少於 3 個月則留空。
+    The matrix shows which factors' predictive power shows up together, not the cross-sectional correlation of the factor values themselves.
+    Each pair uses only months where both ICs exist. Fewer than 3 overlapping months is left blank.
 
-    參數:
-        ic: 月度 IC。
+    Args:
+        ic: Monthly IC.
     """
     corr = ic.astype(float).corr(method="pearson", min_periods=_MIN_CORR_MONTHS)
     shown = corr.rename(index=_SHORT, columns=_SHORT)
-    print("\n=== 因子月度 IC 序列的皮爾森相關 ===", flush=True)
-    print("列與欄是因子的月 IC，不是股票的因子值。對角是 1。", flush=True)
+    print("\n=== Pearson correlation of monthly factor IC series ===", flush=True)
+    print("Rows and columns are monthly factor IC, not the stocks' factor values. The diagonal is 1.", flush=True)
     print(shown.to_string(float_format=lambda value: f"{value:6.2f}", na_rep="   —"), flush=True)
 
     pairs: list[tuple[float, float, str, str]] = []
@@ -693,9 +694,9 @@ def _print_correlation(ic: pd.DataFrame) -> None:
                 continue
             pairs.append((abs(float(value)), float(value), _SHORT[left], _SHORT[right]))
     pairs.sort(key=lambda item: (-item[0], item[2], item[3]))
-    print("\n絕對相關最高的因子對", flush=True)
+    print("\nFactor pairs with the highest absolute correlation", flush=True)
     if not pairs:
-        print("沒有足夠重疊的月份可以算相關。", flush=True)
+        print("Not enough overlapping months to compute a correlation.", flush=True)
         return
     for _abs_value, value, left, right in pairs[:5]:
         print(f"  {left} vs {right}  {value:+.2f}", flush=True)
@@ -703,18 +704,18 @@ def _print_correlation(ic: pd.DataFrame) -> None:
 
 def _print_coverage(shortfalls: list[dict[str, Any]], n_months: int) -> None:
     """
-    說明哪些因子沒有把 34 檔都納進某個月，以及哪些月份的 IC 無法定義。
+    Say which factors did not include all 34 names in some month, and which months have an undefined IC.
 
-    參數:
-        shortfalls: 未滿全樣本，或相關係數無法定義的月份。
-        n_months: 訊號月總數。
+    Args:
+        shortfalls: Months that were short of the full sample, or whose correlation is undefined.
+        n_months: Number of signal months.
     """
-    print("\n=== 橫斷面涵蓋 ===", flush=True)
+    print("\n=== Cross-section coverage ===", flush=True)
     if not shortfalls:
-        print(f"每個因子的 {n_months} 個月份都納入 {_GROUP_SIZE} 檔。", flush=True)
+        print(f"Every factor included all {_GROUP_SIZE} names in all {n_months} months.", flush=True)
         return
     print(
-        f"目標是每個月 {_GROUP_SIZE} 檔。下面這些月份少了因子值或持有期報酬，該月 IC 只用得齊的股票。",
+        f"The target is {_GROUP_SIZE} names each month. The months below are missing a factor value or a holding-period return, so that month's IC uses only the names that are complete.",
         flush=True,
     )
     by_factor: dict[str, list[dict[str, Any]]] = {key: [] for key, _label in _FACTORS}
@@ -726,66 +727,67 @@ def _print_coverage(shortfalls: list[dict[str, Any]], n_months: int) -> None:
         thin = [row for row in rows if int(row["used"]) != _GROUP_SIZE]
         undefined = [row for row in rows if row.get("reason")]
         if not thin and not undefined:
-            print(f"{labels[key]}：{n_months} 個月都是 {_GROUP_SIZE} 檔", flush=True)
+            print(f"{labels[key]}: all {n_months} months have {_GROUP_SIZE} names", flush=True)
             continue
         if thin:
             absent: dict[str, int] = {}
             for row in thin:
                 for ticker in row["missing"]:
                     absent[str(ticker)] = absent.get(str(ticker), 0) + 1
-            detail = "，".join(f"{ticker} 缺 {count} 個月" for ticker, count in sorted(absent.items()))
+            detail = ", ".join(f"{ticker} missing {count} months" for ticker, count in sorted(absent.items()))
             print(
-                f"{labels[key]}：{len(thin)} 個月未滿 {_GROUP_SIZE} 檔（{detail}）",
+                f"{labels[key]}: {len(thin)} months below {_GROUP_SIZE} names ({detail})",
                 flush=True,
             )
         else:
-            print(f"{labels[key]}：{n_months} 個月都是 {_GROUP_SIZE} 檔", flush=True)
+            print(f"{labels[key]}: all {n_months} months have {_GROUP_SIZE} names", flush=True)
         for row in undefined:
             print(
-                f"  {row['month']} 的 IC 無法定義（{row['reason']}，該月有 {row['used']} 檔）",
+                f"  {row['month']} IC is undefined ({row['reason']}, {row['used']} names that month)",
                 flush=True,
             )
 
 
 def _base_tech_weights() -> dict[str, float]:
     """
-    讀取 config.TECH_SCORE_WEIGHTS，順序固定為五項子分數。
+    Read config.TECH_SCORE_WEIGHTS, in the fixed order of the five subscores.
 
-    回傳:
-        子分數代號對到權重。缺任何一項就拒絕，避免默默少算一項。
+    Returns:
+        Subscore id to weight. A missing key is rejected so a term is not silently dropped.
     """
     missing = [key for key in _SUBSCORE_KEYS if key not in TECH_SCORE_WEIGHTS]
     if missing:
-        raise KeyError("TECH_SCORE_WEIGHTS 缺少：" + "、".join(missing))
+        raise KeyError("TECH_SCORE_WEIGHTS is missing: " + ", ".join(missing))
     return {key: float(TECH_SCORE_WEIGHTS[key]) for key in _SUBSCORE_KEYS}
 
 
 def _renormalize(base: dict[str, float], keep: tuple[str, ...]) -> dict[str, float]:
     """
-    保留指定子分數，並按原本的相對比例把權重總和調成 1。
+    Keep the named subscores and rescale their original relative weights so they sum to 1.
 
-    參數:
-        base: config 的原始權重。
-        keep: 要留下的子分數代號。
+    Args:
+        base: Original weights from config.
+        keep: Subscore ids to keep.
 
-    回傳:
-        五項都在的新權重。被拿掉的項目是 0。
+    Returns:
+        A new weight dict that still has all five keys. Dropped keys are 0.
     """
     total = sum(base[key] for key in keep)
     if total == 0:
-        raise ValueError("要留下的權重總和是 0，無法歸一化")
+        raise ValueError("The weights being kept sum to 0, so they cannot be normalized")
     return {key: (base[key] / total if key in keep else 0.0) for key in _SUBSCORE_KEYS}
 
 
 def _composite_schemes() -> list[dict[str, Any]]:
     """
-    五種綜合分的權重。評分規則不變，只改加權。
+    Weights for the five composite scores. The scoring rule does not change. Only the weights do.
 
-    RSI 反向是把 RSI 的權重改成負數，其餘四項維持 config 的原值，不重新歸一。
-    只保留布林與均線是題目指定的各 0.50，不從原比例換算。
+    The RSI-flipped case sets the RSI weight negative and leaves the other four at the config values, without renormalizing.
+    Bollinger-and-moving-average only is the specified 0.50 each, not a rescaling of the original shares.
 
-    回傳:
-        每種一列，含名稱、權重、這組權重怎麼來的。
+    Returns:
+        One row per scheme, with the name, the weights, and how those weights were built.
+        The looked-up names stay 現況, 移除 RSI, and RSI 反向.
     """
     base = _base_tech_weights()
     flipped = dict(base)
@@ -798,20 +800,20 @@ def _composite_schemes() -> list[dict[str, Any]]:
         {
             "name": "移除 RSI",
             "weights": _renormalize(base, ("macd", "bollinger", "ma_trend", "volume")),
-            "note": "其餘四項按原比例歸一",
+            "note": "the other four renormalized to their original shares",
         },
-        {"name": "RSI 反向", "weights": flipped, "note": "RSI 權重取負，其餘不變"},
+        {"name": "RSI 反向", "weights": flipped, "note": "RSI weight flipped negative, the rest unchanged"},
         {
-            "name": "移除 RSI 與 MACD",
+            "name": "Drop RSI and MACD",
             "weights": _renormalize(base, ("bollinger", "ma_trend", "volume")),
-            "note": "其餘三項按原比例歸一",
+            "note": "the other three renormalized to their original shares",
         },
-        {"name": "只保留布林與均線", "weights": trend_only, "note": "各 0.50"},
+        {"name": "Bollinger and moving average only", "weights": trend_only, "note": "0.50 each"},
     ]
 
 
 def _fmt_weight(value: float) -> str:
-    """權重帶正負號。去掉多餘的 0，至少留兩位小數。"""
+    """Signed weight. Extra zeros are stripped, and at least two decimals are kept."""
     text = f"{value:+.6f}".rstrip("0").rstrip(".")
     if "." not in text:
         text += ".00"
@@ -823,9 +825,9 @@ def _fmt_weight(value: float) -> str:
 
 
 def _fmt_weight_set(weights: dict[str, float]) -> str:
-    """把五項權重印成一行。權重為 0 的項目也留下，避免看成被漏掉。"""
-    labels = {"rsi": "RSI", "macd": "MACD", "bollinger": "布林", "ma_trend": "均線", "volume": "成交量"}
-    return "、".join(f"{labels[key]} {_fmt_weight(weights[key])}" for key in _SUBSCORE_KEYS)
+    """Print the five weights on one line. A zero weight is still shown so it does not look omitted."""
+    labels = {"rsi": "RSI", "macd": "MACD", "bollinger": "Bollinger", "ma_trend": "MA", "volume": "Volume"}
+    return ", ".join(f"{labels[key]} {_fmt_weight(weights[key])}" for key in _SUBSCORE_KEYS)
 
 
 def _composite_cross_section(
@@ -835,19 +837,19 @@ def _composite_cross_section(
     weights: dict[str, float],
 ) -> pd.Series:
     """
-    某一天的綜合分橫斷面。
+    One day's cross-section of the composite score.
 
-    權重不是 0 的子分數只要有一個缺失，這檔就是 NaN，不用中性分數補上。
-    子分數本身若已是評分函式回傳的 50，這裡照用，不另行改寫。
+    If any subscore with a non-zero weight is missing, that name is NaN. A neutral score is not filled in.
+    A subscore that is already the scorer's returned 50 is used as-is and is not rewritten.
 
-    參數:
-        factors: 每檔的因子表。
-        tickers: 組 A 全部代號。
-        stamp: 訊號日。
-        weights: 五項子分數的權重，可以是負的。
+    Args:
+        factors: Factor table for each name.
+        tickers: Every Group A symbol.
+        stamp: Signal day.
+        weights: Weights for the five subscores. A weight may be negative.
 
-    回傳:
-        索引為全部股票的綜合分。缺失是 NaN。
+    Returns:
+        Composite score indexed by every stock. Missing values are NaN.
     """
     values: dict[str, float] = {}
     for ticker in tickers:
@@ -873,17 +875,17 @@ def _composite_monthly_ic(
     weights: dict[str, float],
 ) -> pd.Series:
     """
-    一種綜合分的月度 rank IC。算法與單一因子相同。
+    Monthly rank IC for one composite score. The method matches a single factor.
 
-    參數:
-        factors: 每檔的因子表。
-        close: 對齊到主日曆的收盤價。
-        windows: 訊號日與持有區間。
-        tickers: 組 A 全部代號。
-        weights: 這種綜合分的權重。
+    Args:
+        factors: Factor table for each name.
+        close: Closes aligned to the master calendar.
+        windows: Signal days and holding windows.
+        tickers: Every Group A symbol.
+        weights: Weights for this composite.
 
-    回傳:
-        索引為訊號月的 IC。橫斷面沒有差異時該月是 NaN。
+    Returns:
+        IC indexed by signal month. A month with no cross-sectional variation is NaN.
     """
     values: dict[str, float] = {}
     for window in windows:
@@ -898,16 +900,17 @@ def _composite_monthly_ic(
 
 def _hypothesis_sentence(rows: list[dict[str, Any]]) -> str:
     """
-    用平均 IC 相對現況的方向，描述假設有沒有被這次比較支持。
+    Describe whether this comparison supports the hypothesis, using the direction of mean IC versus 現況.
 
-    假設是「目前符號的 RSI 在拖累綜合分」。支持的方向是：拿掉 RSI，
-    以及把 RSI 權重取負，平均 IC 都高於現況。這裡只描述方向。
+    The hypothesis is that RSI, with its current sign, is dragging the composite down.
+    Support means dropping RSI, and flipping the RSI weight negative, both raise mean IC above 現況.
+    Only the direction is described.
 
-    參數:
-        rows: 五種方案的統計，第一項必須是現況。
+    Args:
+        rows: Statistics for the five schemes. The first row must be 現況.
 
-    回傳:
-        一句話。
+    Returns:
+        One sentence.
     """
     current = float(rows[0]["mean"])
     by_name = {str(row["name"]): row for row in rows}
@@ -916,12 +919,12 @@ def _hypothesis_sentence(rows: list[dict[str, Any]]) -> str:
     drop_higher = float(drop["mean"]) > current
     flip_higher = float(flip["mean"]) > current
     if drop_higher and flip_higher:
-        return "移除 RSI，以及把 RSI 權重取負，平均 IC 都高於現況。變化方向與「目前的 RSI 子分數在拖累綜合分」一致。"
+        return "Dropping RSI, and flipping the RSI weight negative, both raise mean IC above 現況. The direction matches the idea that the current RSI subscore is dragging the composite down."
     if not drop_higher and not flip_higher:
-        return "移除 RSI，以及把 RSI 權重取負，平均 IC 都沒有高於現況。變化方向與這個假設不一致。"
+        return "Dropping RSI, and flipping the RSI weight negative, both fail to raise mean IC above 現況. The direction does not match that hypothesis."
     if drop_higher:
-        return "移除 RSI 的平均 IC 高於現況，但 RSI 權重取負沒有。變化方向只部分符合假設。"
-    return "RSI 權重取負的平均 IC 高於現況，但移除 RSI 沒有。變化方向只部分符合假設。"
+        return "Dropping RSI raises mean IC above 現況, but flipping the RSI weight negative does not. The direction only partly matches the hypothesis."
+    return "Flipping the RSI weight negative raises mean IC above 現況, but dropping RSI does not. The direction only partly matches the hypothesis."
 
 
 def _print_composite_comparison(
@@ -931,24 +934,24 @@ def _print_composite_comparison(
     tickers: list[str],
 ) -> None:
     """
-    印出五種綜合分的 rank IC。順序固定，不依 IC 重排。
+    Print rank IC for the five composites. The order is fixed and is not re-sorted by IC.
 
-    參數:
-        factors: 每檔的因子表。子分數已經做過前視偏差檢查。
-        close: 對齊到主日曆的收盤價。
-        windows: 訊號日與持有區間。
-        tickers: 組 A 全部代號。
+    Args:
+        factors: Factor table for each name. Subscores have already passed the lookahead check.
+        close: Closes aligned to the master calendar.
+        windows: Signal days and holding windows.
+        tickers: Every Group A symbol.
     """
     schemes = _composite_schemes()
-    print("\n=== 綜合分權重比較（同一批子分數，只算 rank IC）===", flush=True)
+    print("\n=== Composite-weight comparison (same subscores, rank IC only) ===", flush=True)
     print(
-        "假設是 RSI 子分數的方向錯誤，拖累了綜合分。下面看的是相對現況的變化方向。",
+        "The hypothesis is that the RSI subscore has the wrong sign and is dragging the composite down. The table shows the direction of the change versus 現況.",
         flush=True,
     )
-    print(f"config.TECH_SCORE_WEIGHTS：{_fmt_weight_set(schemes[0]['weights'])}", flush=True)
-    print("綜合分是子分數的加權和。評分規則沒有改。", flush=True)
+    print(f"config.TECH_SCORE_WEIGHTS: {_fmt_weight_set(schemes[0]['weights'])}", flush=True)
+    print("The composite is a weighted sum of subscores. The scoring rule was not changed.", flush=True)
     for scheme in schemes:
-        print(f"  {scheme['name']}（{scheme['note']}）：{_fmt_weight_set(scheme['weights'])}", flush=True)
+        print(f"  {scheme['name']} ({scheme['note']}): {_fmt_weight_set(scheme['weights'])}", flush=True)
 
     rows: list[dict[str, Any]] = []
     for scheme in schemes:
@@ -975,7 +978,7 @@ def _print_composite_comparison(
     print(display.to_string(index=False), flush=True)
     print(_hypothesis_sentence(rows), flush=True)
     print(
-        "這 5 種是同一批資料上的事後比較，即使某一種 IC 較高，也不構成「這個權重有效」的證據。",
+        "These 5 schemes are an ex-post comparison on the same sample. A higher IC is not evidence that the weight is valid.",
         flush=True,
     )
 
@@ -985,11 +988,11 @@ def _print_placeholder_scores(
     windows: list[dict[str, Any]],
 ) -> None:
     """
-    子分數在指標還沒算出來時會得到中性 50。把這種股票月數列出來。
+    A subscore is a neutral 50 when its indicator is not ready yet. List those stock-months.
 
-    參數:
-        missing_inputs: 每檔的缺失表。
-        windows: 訊號月。只統計這些月底，不統計暖機期。
+    Args:
+        missing_inputs: Missing-input table for each name.
+        windows: Signal months. Only these month-ends are counted, not the warmup.
     """
     counts: dict[str, dict[str, int]] = {key: {} for key in _SUBSCORE_KEYS}
     for ticker, frame in missing_inputs.items():
@@ -1003,37 +1006,37 @@ def _print_placeholder_scores(
                 if bool(frame.at[stamp, key]):
                     counts[key][ticker] = counts[key].get(ticker, 0) + 1
     labels = dict(_FACTORS)
-    print("\n=== 子分數輸入缺失（評分函式回傳中性 50）===", flush=True)
+    print("\n=== Missing subscore inputs (the scorer returned a neutral 50) ===", flush=True)
     if not any(counts.values()):
-        print("訊號月上沒有這種情形。", flush=True)
+        print("No signal month has this case.", flush=True)
         return
     for key in _SUBSCORE_KEYS:
         if not counts[key]:
             continue
-        detail = "，".join(f"{ticker} {count} 個月" for ticker, count in sorted(counts[key].items()))
+        detail = ", ".join(f"{ticker} {count} months" for ticker, count in sorted(counts[key].items()))
         total = sum(counts[key].values())
-        print(f"  {labels[key]}：{total} 個股票月（{detail}）", flush=True)
+        print(f"  {labels[key]}: {total} stock-months ({detail})", flush=True)
 
 
 def _load_histories(tickers: list[str]) -> tuple[dict[str, pd.DataFrame], pd.DatetimeIndex, pd.DataFrame]:
     """
-    讀取組 A 與 SPY 的價量，並做成與現有 rank IC 相同的收盤價面板。
+    Load Group A and SPY prices and build the same close panel the existing rank IC uses.
 
-    參數:
-        tickers: 組 A 代號。
+    Args:
+        tickers: Group A symbols.
 
-    回傳:
-        (每檔已整理的 OHLCV, SPY 日曆, 對齊日曆的收盤價)。
-        缺任何一檔或沒有 SPY 時拋出 RuntimeError。
+    Returns:
+        (prepared OHLCV for each name, the SPY calendar, closes aligned to that calendar).
+        Raises RuntimeError when any name is missing or SPY is missing.
     """
     fetch_start = BACKTEST_START - timedelta(days=_WARMUP_DAYS)
     panel = build_ohlcv_panel([*tickers, _CALENDAR], fetch_start, BACKTEST_END)
     spy = panel.get(_CALENDAR)
     if spy is None or spy.empty:
-        raise RuntimeError("沒有 SPY 價量，無法沿用現有的月底日曆")
+        raise RuntimeError("No SPY prices, so the existing month-end calendar cannot be reused")
     missing = [ticker for ticker in tickers if ticker not in panel or panel[ticker] is None or panel[ticker].empty]
     if missing:
-        raise RuntimeError("這些代號沒有價量，無法把 34 檔都納入：" + ", ".join(missing))
+        raise RuntimeError("These symbols have no prices, so all 34 names cannot be included: " + ", ".join(missing))
 
     master = _as_timestamp_index(spy.index)
     master = master[(master >= pd.Timestamp(fetch_start)) & (master <= pd.Timestamp(BACKTEST_END))]
@@ -1049,10 +1052,10 @@ def _load_histories(tickers: list[str]) -> tuple[dict[str, pd.DataFrame], pd.Dat
 
 def run_factor_research() -> int:
     """
-    跑組 A 的因子 IC，並先做前視偏差檢查。
+    Run Group A's factor IC, after the lookahead check.
 
-    回傳:
-        0 表示檢查通過且表已印出；1 表示中止。
+    Returns:
+        0 when the check passed and the tables were printed. 1 when the run stopped.
     """
     logging.getLogger("backtest_data").setLevel(logging.WARNING)
     logging.getLogger("backtest_universe_sp500").setLevel(logging.WARNING)
@@ -1062,38 +1065,38 @@ def run_factor_research() -> int:
         groups = define_three_groups()
         tickers = list(groups["A"])
     except Exception:
-        _log.exception("組 A 名單建立失敗")
-        print("組 A 名單建立失敗，因子研究中止。", flush=True)
+        _log.exception("Group A list failed to build")
+        print("Group A list failed to build. Factor research stopped.", flush=True)
         return 1
 
-    print(f"組 A（{len(tickers)} 檔）：{', '.join(tickers)}", flush=True)
+    print(f"Group A ({len(tickers)} names): {', '.join(tickers)}", flush=True)
     if len(tickers) != _GROUP_SIZE:
-        print(f"組 A 不是 {_GROUP_SIZE} 檔，因子研究中止。", flush=True)
+        print(f"Group A is not {_GROUP_SIZE} names. Factor research stopped.", flush=True)
         return 1
 
     try:
         histories, master, close = _load_histories(tickers)
     except Exception as exc:
-        _log.exception("價量讀取失敗")
-        print(f"價量讀取失敗，因子研究中止：{exc}", flush=True)
+        _log.exception("Price load failed")
+        print(f"Price load failed. Factor research stopped: {exc}", flush=True)
         return 1
 
     windows = _holding_windows(master)
     if not windows:
-        print("沒有任何訊號月，因子研究中止。", flush=True)
+        print("There are no signal months. Factor research stopped.", flush=True)
         return 1
     signals = [window["signal"] for window in windows]
-    # 子分數對照要用每檔最後一個交易日，所以評分日多加這一天。
+    # The subscore check uses each name's last trading day, so that day is added to the score dates.
     score_dates = pd.DatetimeIndex([*signals, *(history.index[-1] for history in histories.values())])
 
     print(
-        f"固定區間 {BACKTEST_START.isoformat()} 至 {BACKTEST_END.isoformat()}。"
-        f"訊號月 {windows[0]['signal_month']} 至 {windows[-1]['signal_month']}，共 {len(windows)} 個。",
+        f"Fixed window {BACKTEST_START.isoformat()} to {BACKTEST_END.isoformat()}. "
+        f"Signal months {windows[0]['signal_month']} to {windows[-1]['signal_month']}, {len(windows)} months.",
         flush=True,
     )
     print(
-        f"第一段持有 {windows[0]['hold'][0].date().isoformat()} 至 {windows[0]['hold'][-1].date().isoformat()}；"
-        f"最後一段持有 {windows[-1]['hold'][0].date().isoformat()} 至 {windows[-1]['hold'][-1].date().isoformat()}。",
+        f"First hold {windows[0]['hold'][0].date().isoformat()} to {windows[0]['hold'][-1].date().isoformat()}; "
+        f"last hold {windows[-1]['hold'][0].date().isoformat()} to {windows[-1]['hold'][-1].date().isoformat()}.",
         flush=True,
     )
     _print_definitions()
@@ -1104,37 +1107,37 @@ def run_factor_research() -> int:
         try:
             factor_frame, missing = compute_factors(history, score_dates=score_dates)
         except Exception:
-            _log.exception("%s 因子計算失敗", ticker)
-            print(f"{ticker} 因子計算失敗，因子研究中止。", flush=True)
+            _log.exception("%s factor calculation failed", ticker)
+            print(f"{ticker} factor calculation failed. Factor research stopped.", flush=True)
             return 1
         factors[ticker] = factor_frame
         missing_inputs[ticker] = missing
 
     if not _check_indicator_api(histories, factors):
-        print("子分數與 indicators.calculate_tech_score 不一致，因子研究中止。", flush=True)
+        print("Subscores do not match indicators.calculate_tech_score. Factor research stopped.", flush=True)
         return 1
 
-    print("\n開始前視偏差檢查：每個訊號月只保留到該月底再重算。", flush=True)
+    print("\nStarting the lookahead check: each signal month is recomputed on data kept only through that month-end.", flush=True)
     try:
         mismatches = verify_no_lookahead(histories, factors, signals)
     except Exception:
-        _log.exception("前視偏差檢查發生例外")
-        print("前視偏差檢查發生例外，因子研究中止。", flush=True)
+        _log.exception("The lookahead check raised an exception")
+        print("The lookahead check raised an exception. Factor research stopped.", flush=True)
         return 1
     if mismatches:
         print(
-            f"前視偏差檢查失敗：{len(mismatches)} 處不一致。因子研究中止，不計算 IC。",
+            f"Lookahead check failed: {len(mismatches)} mismatches. Factor research stopped. IC is not computed.",
             flush=True,
         )
         for row in mismatches[:12]:
             detail = f"，{row['detail']}" if row["detail"] else ""
             print(
                 f"  {row['factor']}  {row['month']}  {row['ticker']}"
-                f"  完整資料={row['full']}  截斷至該月={row['truncated']}{detail}",
+                f"  full={row['full']}  truncated to that month={row['truncated']}{detail}",
                 flush=True,
             )
         if len(mismatches) > 12:
-            print(f"  …其餘 {len(mismatches) - 12} 筆省略", flush=True)
+            print(f"  ...{len(mismatches) - 12} more rows omitted", flush=True)
         return 1
 
     finite_counts = {
@@ -1143,11 +1146,11 @@ def run_factor_research() -> int:
     }
     empty = [label for key, label in _FACTORS if finite_counts[key] == 0]
     if empty:
-        print("這些因子在所有訊號月都沒有數值，因子研究中止：" + "、".join(empty), flush=True)
+        print("These factors have no value in any signal month. Factor research stopped: " + ", ".join(empty), flush=True)
         return 1
     print(
-        f"前視偏差檢查通過：{len(_FACTORS)} 個因子 × {len(signals)} 個訊號月 × {len(tickers)} 檔，"
-        "截斷至該月與完整資料一致。",
+        f"Lookahead check passed: {len(_FACTORS)} factors x {len(signals)} signal months x {len(tickers)} names, "
+        "truncated-to-month matches the full series.",
         flush=True,
     )
 
@@ -1159,14 +1162,14 @@ def run_factor_research() -> int:
     try:
         _print_composite_comparison(factors, close, windows, tickers)
     except Exception:
-        _log.exception("綜合分權重比較失敗")
-        print("綜合分權重比較失敗。單一因子的 IC 已印出，這段比較中止。", flush=True)
+        _log.exception("Composite-weight comparison failed")
+        print("Composite-weight comparison failed. Single-factor IC was already printed. This comparison stopped.", flush=True)
         return 1
     return 0
 
 
 def main() -> None:
-    """執行因子研究。檢查失敗時以離開碼 1 結束。"""
+    """Run the factor research. Exit code 1 when a check fails."""
     sys.exit(run_factor_research())
 
 
