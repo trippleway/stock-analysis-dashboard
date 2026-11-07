@@ -464,7 +464,7 @@ def render_daily_page(daily: dict[str, Any]) -> None:
 
             if st.button("View full analysis", key=f"detail_{ticker}", use_container_width=True):
                 st.session_state["selected_ticker"] = ticker
-                st.session_state["page"] = "🔬 個股深度分析"
+                st.session_state["page"] = "Stock Deep Dive"
                 st.rerun()
 
 
@@ -728,12 +728,12 @@ def render_deep_page(daily: dict[str, Any]) -> None:
         sig = tech.get("signals", {})
         ind_df = pd.DataFrame(
             [
-                {"指標": "RSI", "數值": cv.get("rsi"), "信號": sig.get("rsi")},
-                {"指標": "MACD_HIST", "數值": cv.get("macd_hist"), "信號": sig.get("macd")},
-                {"指標": "KD_K", "數值": cv.get("kd_k"), "信號": ""},
-                {"指標": "KD_D", "數值": cv.get("kd_d"), "信號": ""},
-                {"指標": "ADX", "數值": cv.get("adx"), "信號": sig.get("ma_trend")},
-                {"指標": "ATR", "數值": cv.get("atr"), "信號": ""},
+                {"Indicator": "RSI", "Value": cv.get("rsi"), "Signal": sig.get("rsi")},
+                {"Indicator": "MACD_HIST", "Value": cv.get("macd_hist"), "Signal": sig.get("macd")},
+                {"Indicator": "KD_K", "Value": cv.get("kd_k"), "Signal": ""},
+                {"Indicator": "KD_D", "Value": cv.get("kd_d"), "Signal": ""},
+                {"Indicator": "ADX", "Value": cv.get("adx"), "Signal": sig.get("ma_trend")},
+                {"Indicator": "ATR", "Value": cv.get("atr"), "Signal": ""},
             ]
         )
         st.dataframe(ind_df, use_container_width=True, hide_index=True)
@@ -773,7 +773,7 @@ def render_deep_page(daily: dict[str, Any]) -> None:
                 ["debtToEquity", info.get("debtToEquity")],
                 ["currentRatio", info.get("currentRatio")],
             ],
-            columns=["指標", "數值"],
+            columns=["Indicator", "Value"],
         )
         st.dataframe(fin_df, use_container_width=True, hide_index=True)
         a1, a2 = st.columns(2)
@@ -851,7 +851,7 @@ def render_deep_page(daily: dict[str, Any]) -> None:
                 ["PEG", methods.get("peg_method", {}).get("fair_price"), methods.get("peg_method", {}).get("weight")],
                 ["Analyst target", methods.get("analyst_target", {}).get("fair_price"), methods.get("analyst_target", {}).get("weight")],
             ],
-            columns=["方法", "估值", "權重"],
+            columns=["Method", "Valuation", "Weight"],
         )
         st.dataframe(table, use_container_width=True, hide_index=True)
         st.caption("This forecast is for reference only and is not investment advice")
@@ -977,32 +977,32 @@ def render_overview_page(daily: dict[str, Any]) -> None:
         return
     df = pd.DataFrame(rows).rename(
         columns={
-            "ticker": "股票代號",
-            "name": "公司",
-            "composite_score": "綜合評分",
-            "tech_score": "技術",
-            "fund_score": "基本",
-            "valuation_score": "估值",
-            "prediction_return_pct": "預測",
+            "ticker": "Ticker",
+            "name": "Company",
+            "composite_score": "Composite Score",
+            "tech_score": "Technical",
+            "fund_score": "Fundamental",
+            "valuation_score": "Valuation",
+            "prediction_return_pct": "Forecast",
         }
     )
-    df["產業"] = df["股票代號"].apply(get_stock_sector)
+    df["Sector"] = df["Ticker"].apply(get_stock_sector)
     price_map = {}
     for p in daily.get("picks", []):
         price_map[p.get("ticker")] = p.get("current_price")
-    df["價格"] = df["股票代號"].map(price_map)
+    df["Price"] = df["Ticker"].map(price_map)
 
     # Fill prices missing from all_scores via the data_collector cache
-    missing_mask = df["價格"].isna()
+    missing_mask = df["Price"].isna()
     if missing_mask.any():
-        missing_tickers = df.loc[missing_mask, "股票代號"].astype(str).tolist()
+        missing_tickers = df.loc[missing_mask, "Ticker"].astype(str).tolist()
         filled_prices = {t: get_cached_current_price(t) for t in missing_tickers}
-        df.loc[missing_mask, "價格"] = df.loc[missing_mask, "股票代號"].map(filled_prices)
+        df.loc[missing_mask, "Price"] = df.loc[missing_mask, "Ticker"].map(filled_prices)
 
-    df = df[["股票代號", "公司", "價格", "綜合評分", "技術", "基本", "估值", "預測", "產業"]]
-    df = df.sort_values("綜合評分", ascending=False).reset_index(drop=True)
+    df = df[["Ticker", "Company", "Price", "Composite Score", "Technical", "Fundamental", "Valuation", "Forecast", "Sector"]]
+    df = df.sort_values("Composite Score", ascending=False).reset_index(drop=True)
 
-    tickers_list = df["股票代號"].astype(str).tolist()
+    tickers_list = df["Ticker"].astype(str).tolist()
     entry_by_ticker: dict[str, dict[str, Any]] = {}
     for t_sym in tickers_list:
         er = compute_entry_analysis(t_sym)
@@ -1025,21 +1025,21 @@ def render_overview_page(daily: dict[str, Any]) -> None:
             return "—"
         return f"{v:+.1f}%"
 
-    df["進場"] = df["股票代號"].map(_entry_emoji)
-    df["距標準進場"] = df["股票代號"].map(_dist_standard_pct)
-    df["_entry_status"] = df["股票代號"].astype(str).map(
+    df["Entry"] = df["Ticker"].map(_entry_emoji)
+    df["Distance to Standard Entry"] = df["Ticker"].map(_dist_standard_pct)
+    df["_entry_status"] = df["Ticker"].astype(str).map(
         lambda x: str((entry_by_ticker.get(str(x)) or {}).get("current_status") or "")
     )
 
     keyword = st.text_input("Search ticker or company")
-    sectors = sorted(df["產業"].dropna().unique().tolist())
+    sectors = sorted(df["Sector"].dropna().unique().tolist())
     sector_sel = st.multiselect("Filter by sector", sectors)
     only_buy_now = st.checkbox("Only show 🟢 ready to enter (buy_now)", value=False)
     filtered = df.copy()
     if keyword:
-        filtered = filtered[filtered["股票代號"].str.contains(keyword, case=False) | filtered["公司"].str.contains(keyword, case=False)]
+        filtered = filtered[filtered["Ticker"].str.contains(keyword, case=False) | filtered["Company"].str.contains(keyword, case=False)]
     if sector_sel:
-        filtered = filtered[filtered["產業"].isin(sector_sel)]
+        filtered = filtered[filtered["Sector"].isin(sector_sel)]
     if only_buy_now:
         filtered = filtered[filtered["_entry_status"] == "buy_now"]
 
@@ -1057,11 +1057,11 @@ def render_overview_page(daily: dict[str, Any]) -> None:
         )
         if event and event.selection and event.selection.get("rows"):
             i = event.selection["rows"][0]
-            selected_ticker = str(display_df.iloc[i]["股票代號"])
+            selected_ticker = str(display_df.iloc[i]["Ticker"])
     except TypeError:
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-    sym_opts = display_df["股票代號"].tolist()
+    sym_opts = display_df["Ticker"].tolist()
     choice: str | None = None
     if sym_opts:
         choice = st.selectbox("Select a stock for the full analysis", sym_opts, index=0)
@@ -1071,7 +1071,7 @@ def render_overview_page(daily: dict[str, Any]) -> None:
         choice = selected_ticker
     if choice and st.button("Open stock analysis"):
         st.session_state["selected_ticker"] = choice
-        st.session_state["page"] = "🔬 個股深度分析"
+        st.session_state["page"] = "Stock Deep Dive"
         st.rerun()
 
 
@@ -1155,10 +1155,10 @@ def _render_perf_concentration(concentration: dict[str, Any] | str) -> None:
     by_ticker = concentration["by_ticker"]
     rows = [
         {
-            "標的": ticker,
-            "入選次數": int(stats.get("picks") or 0),
-            "平均 1M 報酬": _fmt_pct(stats.get("avg_return_1m")),
-            "貢獻度": _fmt_pct(stats.get("contribution")),
+            "Ticker": ticker,
+            "Times Selected": int(stats.get("picks") or 0),
+            "Avg 1M Return": _fmt_pct(stats.get("avg_return_1m")),
+            "Contribution": _fmt_pct(stats.get("contribution")),
             "_sort": _to_float_safe(stats.get("contribution"), 0.0),
         }
         for ticker, stats in by_ticker.items()
@@ -1194,10 +1194,10 @@ def _render_perf_records() -> None:
         return
 
     done_mask = pd.to_numeric(df.get("return_1m"), errors="coerce").notna()
-    choice = st.radio("Tracking status", ["全部", "已完成", "追蹤中"], horizontal=True)
-    if choice == "已完成":
+    choice = st.radio("Tracking status", ["All", "Completed", "Tracking"], horizontal=True)
+    if choice == "Completed":
         view = df[done_mask]
-    elif choice == "追蹤中":
+    elif choice == "Tracking":
         view = df[~done_mask]
     else:
         view = df
@@ -1212,21 +1212,21 @@ def _render_perf_records() -> None:
 
     out = pd.DataFrame(
         {
-            "日期": view["date"].astype(str),
-            "代號": view["ticker"].astype(str),
-            "產業": view.get("sector", pd.Series(dtype=str)).astype(str),
-            "排名": pd.to_numeric(view.get("top_rank"), errors="coerce"),
-            "進場價": pd.to_numeric(view.get("entry_price"), errors="coerce").map(
+            "Date": view["date"].astype(str),
+            "Ticker": view["ticker"].astype(str),
+            "Sector": view.get("sector", pd.Series(dtype=str)).astype(str),
+            "Rank": pd.to_numeric(view.get("top_rank"), errors="coerce"),
+            "Entry Price": pd.to_numeric(view.get("entry_price"), errors="coerce").map(
                 lambda v: f"${v:.2f}" if pd.notna(v) else "—"
             ),
-            "綜合評分": pd.to_numeric(view.get("composite_score"), errors="coerce").round(1),
+            "Composite Score": pd.to_numeric(view.get("composite_score"), errors="coerce").round(1),
             "1D": view.get("return_1d").map(_fmt_pct),
             "1W": view.get("return_1w").map(_fmt_pct),
             "2W": view.get("return_2w").map(_fmt_pct),
             "1M": view.get("return_1m").map(_fmt_pct),
             "SPY 1M": view.get("spy_return_1m").map(_fmt_pct),
             "Alpha": view.get("alpha_1m").map(_fmt_pct),
-            "狀態": view.get("status", pd.Series(dtype=str)).astype(str),
+            "Status": view.get("status", pd.Series(dtype=str)).astype(str),
         }
     )
     st.dataframe(out, use_container_width=True, hide_index=True)
@@ -1276,17 +1276,17 @@ def main() -> None:
         return
 
     st.sidebar.title("Pages")
-    page_options = ["📊 每日精選", "🔬 個股深度分析", "📋 股票總覽", "📊 策略績效"]
-    default_page = st.session_state.get("page", "📊 每日精選")
+    page_options = ["Daily Picks", "Stock Deep Dive", "Universe Overview", "Strategy Performance"]
+    default_page = st.session_state.get("page", "Daily Picks")
     page = st.sidebar.radio("Page", page_options, index=page_options.index(default_page) if default_page in page_options else 0)
     st.session_state["page"] = page
     st.sidebar.caption(f"Last update: {daily.get('date', '-')}")
 
-    if page == "📊 每日精選":
+    if page == "Daily Picks":
         render_daily_page(daily)
-    elif page == "🔬 個股深度分析":
+    elif page == "Stock Deep Dive":
         render_deep_page(daily)
-    elif page == "📊 策略績效":
+    elif page == "Strategy Performance":
         render_performance_page()
     else:
         render_overview_page(daily)
