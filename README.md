@@ -1,6 +1,7 @@
 # US Equity AI Sector Analysis System
 
-A daily stock-screening dashboard for 60 US-listed AI and technology companies,
+A daily stock-screening dashboard for 60 US-listed AI and technology companies
+(59 with usable price history),
 plus the backtesting work done to find out whether its stock-selection signal
 actually has predictive power.
 
@@ -179,7 +180,9 @@ had no price data: 14 confirmed delistings or acquisitions (ATVI, PXD, WRK,
 CTLT, JNPR, HES, …) and 15 with no clear cause, some of which are symbol changes
 (FLT → CPAY, PEAK → DOC). Missing rate falls from 5.4% in 2023-09 to 0.2% in
 2026-08. Acquisitions typically close at a premium, so this omission likely
-biases returns *downward*.
+biases returns *downward*. The same problem affects the live universe: CFLT no
+longer returns price data and is dropped from the backtest, so 59 of the 60
+tickers are usable.
 
 **Only the technical dimension is backtested.** The dashboard's fundamental,
 valuation, and sentiment scores cannot be backtested cleanly — yfinance returns
@@ -203,8 +206,9 @@ predominantly a tech bull market.
 | Approach | Result |
 |---|---|
 | Event-driven exits (take-profit / stop-loss / signal decay) | A 5×5 parameter grid showed extreme sensitivity — shifting the decay window by 2 days moved cumulative return from 307% to 174%. Rejected as overfitting. |
-| Defensive rotation to SPY in drawdowns | Using a real-time regime label (SPY 8% below running high), Sharpe fell 1.24 → 1.09 and return 209.9% → 151.2%. Rejected. |
-| Removing the RSI sub-score | RSI has a negative standalone IC (−0.043) and correlates −0.86 with short-term reversal, so it looked like it was cancelling out the composite. Removing it moved IC 0.055 → 0.059; inverting it made things worse. Hypothesis rejected. |
+| Defensive rotation to SPY in drawdowns | Using a real-time regime label (SPY 8% below its running high), Sharpe fell 1.23 → 1.08 and return 209.9% → 150.7%, across 6 headwind months. Rejected. |
+| Removing the RSI sub-score | RSI has a negative standalone IC (−0.043) and correlates −0.86 with short-term reversal, so it looked like it was cancelling out the composite. Removing it moved IC 0.055 → 0.059; inverting it made things worse (0.052). Hypothesis rejected. |
+| Re-weighting the technical composite | Dropping both the RSI and MACD sub-scores raises composite rank IC from 0.055 to 0.099 (t = 2.27), and a Bollinger + moving-average composite reaches 0.105 (t = 2.31). Both rejected. They are ex-post comparisons on the same 34-name sample, and they are built from the two factors whose significance collapsed hardest on the point-in-time cross-section (Bollinger t 2.10 → 1.19, moving average 1.55 → 0.67). Re-weighting the same noisy inputs produces a higher in-sample IC without producing a signal. |
 
 ---
 
