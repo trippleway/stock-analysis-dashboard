@@ -9,6 +9,9 @@
 既有五項子分數直接呼叫 indicators.py 的評分函式，各自獨立，不加權。
 新增的五個因子只用收盤價與成交量，窗口都是交易日，而且只往回看。
 
+最後用同一批子分數做五種加權，只比較綜合分的 rank IC。
+這是同一段資料上的事後對照，用來檢查 RSI 的方向，不挑選新權重。
+
 前視偏差檢查：把資料截斷到訊號月月底再重算，必須與完整資料在同一個月底的值相同。
 有任何不一致就中止，不印 IC。
 
@@ -43,7 +46,7 @@ from backtest_compare_groups import (  # noqa: E402
 )
 from backtest_data import build_ohlcv_panel  # noqa: E402
 from backtest_robustness import _holding_price_returns, _spearman  # noqa: E402
-from config import BACKTEST_END, BACKTEST_START  # noqa: E402
+from config import BACKTEST_END, BACKTEST_START, TECH_SCORE_WEIGHTS  # noqa: E402
 from indicators import (  # noqa: E402
     _score_bollinger,
     _score_macd,
@@ -744,6 +747,239 @@ def _print_coverage(shortfalls: list[dict[str, Any]], n_months: int) -> None:
             )
 
 
+def _base_tech_weights() -> dict[str, float]:
+    """
+    讀取 config.TECH_SCORE_WEIGHTS，順序固定為五項子分數。
+
+    回傳:
+        子分數代號對到權重。缺任何一項就拒絕，避免默默少算一項。
+    """
+    missing = [key for key in _SUBSCORE_KEYS if key not in TECH_SCORE_WEIGHTS]
+    if missing:
+        raise KeyError("TECH_SCORE_WEIGHTS 缺少：" + "、".join(missing))
+    return {key: float(TECH_SCORE_WEIGHTS[key]) for key in _SUBSCORE_KEYS}
+
+
+def _renormalize(base: dict[str, float], keep: tuple[str, ...]) -> dict[str, float]:
+    """
+    保留指定子分數，並按原本的相對比例把權重總和調成 1。
+
+    參數:
+        base: config 的原始權重。
+        keep: 要留下的子分數代號。
+
+    回傳:
+        五項都在的新權重。被拿掉的項目是 0。
+    """
+    total = sum(base[key] for key in keep)
+    if total == 0:
+        raise ValueError("要留下的權重總和是 0，無法歸一化")
+    return {key: (base[key] / total if key in keep else 0.0) for key in _SUBSCORE_KEYS}
+
+
+def _composite_schemes() -> list[dict[str, Any]]:
+    """
+    五種綜合分的權重。評分規則不變，只改加權。
+
+    RSI 反向是把 RSI 的權重改成負數，其餘四項維持 config 的原值，不重新歸一。
+    只保留布林與均線是題目指定的各 0.50，不從原比例換算。
+
+    回傳:
+        每種一列，含名稱、權重、這組權重怎麼來的。
+    """
+    base = _base_tech_weights()
+    flipped = dict(base)
+    flipped["rsi"] = -base["rsi"]
+    trend_only = {key: 0.0 for key in _SUBSCORE_KEYS}
+    trend_only["bollinger"] = 0.5
+    trend_only["ma_trend"] = 0.5
+    return [
+        {"name": "現況", "weights": base, "note": "config.TECH_SCORE_WEIGHTS"},
+        {
+            "name": "移除 RSI",
+            "weights": _renormalize(base, ("macd", "bollinger", "ma_trend", "volume")),
+            "note": "其餘四項按原比例歸一",
+        },
+        {"name": "RSI 反向", "weights": flipped, "note": "RSI 權重取負，其餘不變"},
+        {
+            "name": "移除 RSI 與 MACD",
+            "weights": _renormalize(base, ("bollinger", "ma_trend", "volume")),
+            "note": "其餘三項按原比例歸一",
+        },
+        {"name": "只保留布林與均線", "weights": trend_only, "note": "各 0.50"},
+    ]
+
+
+def _fmt_weight(value: float) -> str:
+    """權重帶正負號。去掉多餘的 0，至少留兩位小數。"""
+    text = f"{value:+.6f}".rstrip("0").rstrip(".")
+    if "." not in text:
+        text += ".00"
+    else:
+        decimals = text.split(".", 1)[1]
+        if len(decimals) < 2:
+            text += "0" * (2 - len(decimals))
+    return text
+
+
+def _fmt_weight_set(weights: dict[str, float]) -> str:
+    """把五項權重印成一行。權重為 0 的項目也留下，避免看成被漏掉。"""
+    labels = {"rsi": "RSI", "macd": "MACD", "bollinger": "布林", "ma_trend": "均線", "volume": "成交量"}
+    return "、".join(f"{labels[key]} {_fmt_weight(weights[key])}" for key in _SUBSCORE_KEYS)
+
+
+def _composite_cross_section(
+    factors: dict[str, pd.DataFrame],
+    tickers: list[str],
+    stamp: pd.Timestamp,
+    weights: dict[str, float],
+) -> pd.Series:
+    """
+    某一天的綜合分橫斷面。
+
+    權重不是 0 的子分數只要有一個缺失，這檔就是 NaN，不用中性分數補上。
+    子分數本身若已是評分函式回傳的 50，這裡照用，不另行改寫。
+
+    參數:
+        factors: 每檔的因子表。
+        tickers: 組 A 全部代號。
+        stamp: 訊號日。
+        weights: 五項子分數的權重，可以是負的。
+
+    回傳:
+        索引為全部股票的綜合分。缺失是 NaN。
+    """
+    values: dict[str, float] = {}
+    for ticker in tickers:
+        total = 0.0
+        complete = True
+        for key, weight in weights.items():
+            if weight == 0.0:
+                continue
+            value = _value_at(factors[ticker], stamp, key)
+            if not math.isfinite(value):
+                complete = False
+                break
+            total += weight * value
+        values[ticker] = total if complete else float("nan")
+    return pd.Series(values, dtype=float)
+
+
+def _composite_monthly_ic(
+    factors: dict[str, pd.DataFrame],
+    close: pd.DataFrame,
+    windows: list[dict[str, Any]],
+    tickers: list[str],
+    weights: dict[str, float],
+) -> pd.Series:
+    """
+    一種綜合分的月度 rank IC。算法與單一因子相同。
+
+    參數:
+        factors: 每檔的因子表。
+        close: 對齊到主日曆的收盤價。
+        windows: 訊號日與持有區間。
+        tickers: 組 A 全部代號。
+        weights: 這種綜合分的權重。
+
+    回傳:
+        索引為訊號月的 IC。橫斷面沒有差異時該月是 NaN。
+    """
+    values: dict[str, float] = {}
+    for window in windows:
+        returns = _holding_price_returns(close, window["hold"]).reindex(tickers)
+        scores = _composite_cross_section(factors, tickers, window["signal"], weights)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            ic, _used, _missing = _spearman(scores, returns)
+        values[window["signal_month"]] = ic
+    return pd.Series(values, dtype=float, name="ic")
+
+
+def _hypothesis_sentence(rows: list[dict[str, Any]]) -> str:
+    """
+    用平均 IC 相對現況的方向，描述假設有沒有被這次比較支持。
+
+    假設是「目前符號的 RSI 在拖累綜合分」。支持的方向是：拿掉 RSI，
+    以及把 RSI 權重取負，平均 IC 都高於現況。這裡只描述方向。
+
+    參數:
+        rows: 五種方案的統計，第一項必須是現況。
+
+    回傳:
+        一句話。
+    """
+    current = float(rows[0]["mean"])
+    by_name = {str(row["name"]): row for row in rows}
+    drop = by_name["移除 RSI"]
+    flip = by_name["RSI 反向"]
+    drop_higher = float(drop["mean"]) > current
+    flip_higher = float(flip["mean"]) > current
+    if drop_higher and flip_higher:
+        return "移除 RSI，以及把 RSI 權重取負，平均 IC 都高於現況。變化方向與「目前的 RSI 子分數在拖累綜合分」一致。"
+    if not drop_higher and not flip_higher:
+        return "移除 RSI，以及把 RSI 權重取負，平均 IC 都沒有高於現況。變化方向與這個假設不一致。"
+    if drop_higher:
+        return "移除 RSI 的平均 IC 高於現況，但 RSI 權重取負沒有。變化方向只部分符合假設。"
+    return "RSI 權重取負的平均 IC 高於現況，但移除 RSI 沒有。變化方向只部分符合假設。"
+
+
+def _print_composite_comparison(
+    factors: dict[str, pd.DataFrame],
+    close: pd.DataFrame,
+    windows: list[dict[str, Any]],
+    tickers: list[str],
+) -> None:
+    """
+    印出五種綜合分的 rank IC。順序固定，不依 IC 重排。
+
+    參數:
+        factors: 每檔的因子表。子分數已經做過前視偏差檢查。
+        close: 對齊到主日曆的收盤價。
+        windows: 訊號日與持有區間。
+        tickers: 組 A 全部代號。
+    """
+    schemes = _composite_schemes()
+    print("\n=== 綜合分權重比較（同一批子分數，只算 rank IC）===", flush=True)
+    print(
+        "假設是 RSI 子分數的方向錯誤，拖累了綜合分。下面看的是相對現況的變化方向。",
+        flush=True,
+    )
+    print(f"config.TECH_SCORE_WEIGHTS：{_fmt_weight_set(schemes[0]['weights'])}", flush=True)
+    print("綜合分是子分數的加權和。評分規則沒有改。", flush=True)
+    for scheme in schemes:
+        print(f"  {scheme['name']}（{scheme['note']}）：{_fmt_weight_set(scheme['weights'])}", flush=True)
+
+    rows: list[dict[str, Any]] = []
+    for scheme in schemes:
+        series = _composite_monthly_ic(factors, close, windows, tickers, scheme["weights"])
+        stats = _ic_stats(series)
+        rows.append({"name": scheme["name"], "mean": float(stats["mean"]), **stats})
+    current_mean = float(rows[0]["mean"])
+    display = pd.DataFrame(
+        {
+            "方案": [row["name"] for row in rows],
+            "平均 IC": [_fmt_num(float(row["mean"]), 3) for row in rows],
+            "IC 標準差": [_fmt_num(float(row["std"]), 3) for row in rows],
+            "t 統計量": [_fmt_num(float(row["t"]), 2) for row in rows],
+            "IC>0 月份比例": [
+                _fmt_ratio(float(row["positive_ratio"]), int(row["n_positive"]), int(row["n"]))
+                for row in rows
+            ],
+            "平均 IC − 現況": [
+                "—" if row["name"] == "現況" else _fmt_num(float(row["mean"]) - current_mean, 3)
+                for row in rows
+            ],
+        }
+    )
+    print(display.to_string(index=False), flush=True)
+    print(_hypothesis_sentence(rows), flush=True)
+    print(
+        "這 5 種是同一批資料上的事後比較，即使某一種 IC 較高，也不構成「這個權重有效」的證據。",
+        flush=True,
+    )
+
+
 def _print_placeholder_scores(
     missing_inputs: dict[str, pd.DataFrame],
     windows: list[dict[str, Any]],
@@ -920,6 +1156,12 @@ def run_factor_research() -> int:
     _print_correlation(ic)
     _print_coverage(shortfalls, len(windows))
     _print_placeholder_scores(missing_inputs, windows)
+    try:
+        _print_composite_comparison(factors, close, windows, tickers)
+    except Exception:
+        _log.exception("綜合分權重比較失敗")
+        print("綜合分權重比較失敗。單一因子的 IC 已印出，這段比較中止。", flush=True)
+        return 1
     return 0
 
 
