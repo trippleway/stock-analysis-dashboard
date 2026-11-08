@@ -198,6 +198,15 @@ only current fundamentals, and historical news is not retrievable. Any backtest
 of those dimensions would have look-ahead bias. The results above apply to the
 technical composite only.
 
+**The valuation model fails on cyclical earnings.** The P/E method backs out
+trailing EPS and multiplies by the sector's fair multiple, which breaks when
+earnings sit at a cyclical peak or trough: a memory name trading at a trailing
+P/E of 8 produces a fair value more than three times its price. A plausibility
+guard now flags any implied upside above +100% or below −50% as unreliable and
+returns a neutral valuation sub-score instead of a bullish one, but the
+underlying method remains unsuitable for cyclicals. The valuation dimension is
+not backtested and should be read as a screening input, not a price target.
+
 **Max drawdown is −44.5%** against SPY's −18.8% over the same window, a
 consequence of holding 3 names with no position sizing or volatility targeting.
 
