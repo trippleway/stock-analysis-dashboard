@@ -140,6 +140,8 @@ def calculate_entry_prices(stock_data: dict[str, Any]) -> dict[str, Any]:
 
         composite_score = float(_to_float(stock_data.get("composite_score"), 50.0) or 50.0)
         valuation_signal = str(valuation.get("valuation_signal") or "").strip().lower()
+        # An implausible trailing-P/E fair value must not be described as cheap.
+        valuation_trusted = valuation.get("valuation_reliable") is not False
         rsi_signal = str((technical.get("signals") or {}).get("rsi") or "").strip()
 
         # (A) Conservative
@@ -219,12 +221,12 @@ def calculate_entry_prices(stock_data: dict[str, Any]) -> dict[str, Any]:
         if current_status == "avoid":
             if fund_total >= 85:
                 suffix += " (fundamentals are strong; wait for a pullback and then scale in)"
-            if valuation_signal == "undervalued":
+            if valuation_signal == "undervalued" and valuation_trusted:
                 suffix += " (the medium-term valuation is still low, but the short-term price has left the entry band)"
         else:
             if fund_total >= 85:
                 suffix += " (fundamentals are excellent; scaling in can be a bit more aggressive)"
-            if valuation_signal == "undervalued":
+            if valuation_signal == "undervalued" and valuation_trusted:
                 suffix += " (valuation is cheap and downside looks limited)"
 
         pct_to_std = max(0.0, (current - standard) / current * 100.0) if current > 0 else 0.0

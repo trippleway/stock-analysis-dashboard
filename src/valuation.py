@@ -103,7 +103,9 @@ def calculate_fair_value(
         current_price: Current price.
 
     Returns:
-        A valuation result with fair_value, upside_pct, valuation_signal, methods, and score.
+        A valuation result with fair_value, upside_pct, valuation_signal, methods, score,
+        valuation_reliable, and valuation_reason. An implausible upside keeps the
+        computed prices and sets the score to a neutral 50.
     """
     sym = ticker.strip().upper()
     safe_info = info if isinstance(info, dict) else {}
@@ -181,6 +183,22 @@ def calculate_fair_value(
     else:
         signal = "overvalued"
 
+    # Peak or trough earnings times a normal multiple can imply a fair value far from the price.
+    # The bounds live in config. The computed prices stay in the result; only the score is neutralized.
+    upside_frac = (fair_value - curr) / curr
+    max_up = float(VALUATION_PARAMS["max_plausible_upside"])
+    max_down = float(VALUATION_PARAMS["max_plausible_downside"])
+    valuation_reliable = max_down <= upside_frac <= max_up
+    if valuation_reliable:
+        score = _valuation_score(upside_pct)
+        valuation_reason = ""
+    else:
+        score = 50
+        valuation_reason = (
+            "Trailing P/E implies an implausible fair value; "
+            "earnings are likely at a cyclical peak or trough"
+        )
+
     return {
         "ticker": sym,
         "current_price": round(curr, 4),
@@ -207,7 +225,9 @@ def calculate_fair_value(
             },
         },
         "sector_used": sector_key,
-        "score": _valuation_score(upside_pct),
+        "score": score,
+        "valuation_reliable": valuation_reliable,
+        "valuation_reason": valuation_reason,
     }
 
 

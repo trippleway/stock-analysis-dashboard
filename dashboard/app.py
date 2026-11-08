@@ -29,7 +29,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from config import AI_LAYERS, ALL_STOCKS, PICKS_DIR, SECTOR_MAP, TICKER_LIST  # noqa: E402
-from data_collector import fetch_stock_data  # noqa: E402
+from data_collector import fetch_spy_quote, fetch_stock_data  # noqa: E402
 from entry_price import calculate_entry_prices, get_status_emoji, get_status_label_cn  # noqa: E402
 from profile_fetcher import get_profile  # noqa: E402
 from fundamentals import analyze_fundamentals, get_stock_sector  # noqa: E402
@@ -203,6 +203,15 @@ def get_stock_bundle(ticker: str) -> dict[str, Any]:
 
 
 @st.cache_data(ttl=3600)
+def get_cached_spy_quote() -> tuple[float | None, float | None]:
+    """Cached SPY close and prior-session percent change. (None, None) when unavailable."""
+    try:
+        return fetch_spy_quote(force_refresh=False)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+@st.cache_data(ttl=3600)
 def get_cached_current_price(ticker: str) -> float | None:
     """Cached current price via the data_collector same-day cache."""
     raw = fetch_stock_data(ticker, force_refresh=False)
@@ -358,7 +367,12 @@ def render_daily_page(daily: dict[str, Any]) -> None:
     m = daily.get("market_overview", {})
     spy_chg = m.get("spy_change_pct")
     spy_price = m.get("spy_price")
-    spy_txt = f"SPY {spy_price} ({spy_chg:+.2f}%)" if spy_price is not None and spy_chg is not None else "SPY N/A"
+    if spy_price is None or spy_chg is None:
+        spy_price, spy_chg = get_cached_spy_quote()
+    if spy_price is not None and spy_chg is not None:
+        spy_txt = f"SPY {float(spy_price):.2f} ({float(spy_chg):+.2f}%)"
+    else:
+        spy_txt = "SPY N/A"
     st.caption(
         f"Date: {date_str} | {spy_txt} | analyzed {m.get('total_analyzed', 0)}, passed filter {m.get('passed_filter', 0)}"
     )
@@ -397,6 +411,12 @@ def render_daily_page(daily: dict[str, Any]) -> None:
             c2.metric("Fundamental", p.get("fundamental", {}).get("total_score"))
             c3.metric("Valuation", p.get("valuation", {}).get("score"))
             c4.metric("Forecast", p.get("prediction", {}).get("score"))
+            card_val = p.get("valuation") if isinstance(p.get("valuation"), dict) else {}
+            if card_val.get("valuation_reliable") is False:
+                st.warning(
+                    str(card_val.get("valuation_reason") or "").strip()
+                    or "Trailing P/E implies an implausible fair value; earnings are likely at a cyclical peak or trough"
+                )
 
             entry = p.get("entry_price") if isinstance(p.get("entry_price"), dict) else {}
             if entry:
@@ -791,6 +811,11 @@ def render_deep_page(daily: dict[str, Any]) -> None:
         c1.metric("Current price", f"${current_price:.2f}")
         c2.metric("Fair value", f"${fair_price:.2f}", f"{fair_diff:+.2f}%")
         c3.metric("30-day forecast", f"${p30:.2f}", f"[{low:.2f}, {high:.2f}]")
+        if val.get("valuation_reliable") is False:
+            st.warning(
+                str(val.get("valuation_reason") or "").strip()
+                or "Trailing P/E implies an implausible fair value; earnings are likely at a cyclical peak or trough"
+            )
 
         entry = compute_entry_analysis(ticker)
         if entry:

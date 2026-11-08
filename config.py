@@ -263,6 +263,9 @@ VALUATION_PARAMS = {
         "ai_software":   {"low": 25, "mid": 38, "high": 55},
         "consumer":      {"low": 15, "mid": 22, "high": 30},
     },
+    # Fractions, not percentages. Outside this band the trailing-P/E fair value is not trusted.
+    "max_plausible_upside": 1.00,      # +100%
+    "max_plausible_downside": -0.50,   # -50%
 }
 
 # ── Forecast parameters (shared by Prophet and the linear fallback) ─

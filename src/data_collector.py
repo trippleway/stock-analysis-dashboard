@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sys
 import time
 from datetime import datetime, timezone
@@ -316,6 +317,47 @@ def fetch_stock_data(ticker: str, force_refresh: bool = False) -> dict[str, Any]
         log.exception("Cache write failed; the in-memory result is still returned: %s", sym)
 
     return result
+
+
+def fetch_spy_quote(force_refresh: bool = False) -> tuple[float | None, float | None]:
+    """Latest SPY close and the percent change from the previous close.
+
+    SPY is not part of the stock universe, so the daily batch does not include it.
+    This reads the same daily cache as the other tickers. A missing or unusable
+    history returns no quote instead of raising.
+
+    Args:
+        force_refresh: When True, ignore today's cache and fetch again.
+
+    Returns:
+        (price, change_pct). Both are None when the quote is unavailable.
+    """
+    log = _get_logger()
+    try:
+        data = fetch_stock_data("SPY", force_refresh=force_refresh)
+    except Exception as e:  # noqa: BLE001
+        log.warning("SPY quote fetch failed: %s", e)
+        return None, None
+    if not isinstance(data, dict):
+        log.warning("SPY quote is unavailable")
+        return None, None
+    hist = data.get("price_history")
+    if not isinstance(hist, pd.DataFrame) or "Close" not in hist.columns:
+        log.warning("SPY quote has no Close column")
+        return None, None
+    closes = pd.to_numeric(hist["Close"], errors="coerce").dropna()
+    if len(closes) < 2:
+        log.warning("SPY quote has fewer than two closes")
+        return None, None
+    price = float(closes.iloc[-1])
+    previous = float(closes.iloc[-2])
+    if previous == 0 or not math.isfinite(price) or not math.isfinite(previous):
+        log.warning("SPY quote closes are not usable")
+        return None, None
+    change_pct = (price / previous - 1.0) * 100.0
+    if not math.isfinite(change_pct):
+        return None, None
+    return price, change_pct
 
 
 def collect_all_stocks(

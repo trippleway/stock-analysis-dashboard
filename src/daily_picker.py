@@ -25,7 +25,7 @@ if str(_ROOT) not in sys.path:
 
 from config import FILTER_THRESHOLDS, PICKS_DIR, SCORE_WEIGHTS, TICKER_LIST  # noqa: E402
 try:  # Run as a script (python src/daily_picker.py)
-    from data_collector import collect_all_stocks  # type: ignore
+    from data_collector import collect_all_stocks, fetch_spy_quote  # type: ignore
     from entry_price import calculate_entry_prices, get_status_emoji, get_status_label_cn  # type: ignore
     from fundamentals import analyze_fundamentals, get_stock_sector  # type: ignore
     from indicators import calculate_indicators, calculate_tech_score  # type: ignore
@@ -33,7 +33,7 @@ try:  # Run as a script (python src/daily_picker.py)
     from sentiment import analyze_ticker_sentiment  # type: ignore
     from valuation import calculate_fair_value  # type: ignore
 except ModuleNotFoundError:  # Imported as a package (import src.daily_picker)
-    from src.data_collector import collect_all_stocks  # type: ignore
+    from src.data_collector import collect_all_stocks, fetch_spy_quote  # type: ignore
     from src.entry_price import calculate_entry_prices, get_status_emoji, get_status_label_cn  # type: ignore
     from src.fundamentals import analyze_fundamentals, get_stock_sector  # type: ignore
     from src.indicators import calculate_indicators, calculate_tech_score  # type: ignore
@@ -94,7 +94,11 @@ def _build_pick_reasons(
 
     if fundamental.get("signals", {}).get("growth") == "High Growth":
         reasons.append("Revenue and earnings are both growing quickly")
-    if valuation.get("valuation_signal") == "undervalued":
+    if valuation.get("valuation_reliable") is False:
+        caveat = str(valuation.get("valuation_reason") or "").strip()
+        if caveat:
+            reasons.append(caveat)
+    elif valuation.get("valuation_signal") == "undervalued":
         up = _to_float_or_none(valuation.get("upside_pct")) or 0.0
         reasons.append(f"Valuation looks cheap, upside +{up:.1f}%")
     if technical.get("signals", {}).get("macd") == "Golden Cross":
@@ -119,7 +123,11 @@ def _build_pick_reasons(
         if entry_price.get("current_status") == "buy_now":
             reasons.append("✓ Price is already inside the entry zone")
         dist_fair = _to_float_or_none((entry_price.get("distance") or {}).get("to_fair_value_pct"))
-        if dist_fair is not None and dist_fair > 30:
+        if (
+            valuation.get("valuation_reliable") is not False
+            and dist_fair is not None
+            and dist_fair > 30
+        ):
             reasons.append(f"✓ Still {dist_fair:.1f}% below fair value")
         cur_ep = _to_float_or_none(entry_price.get("current_price"))
         batches = entry_price.get("batch_plan") if isinstance(entry_price.get("batch_plan"), list) else []
@@ -145,7 +153,7 @@ def _build_risk_factors(
 
     if technical.get("signals", {}).get("rsi") == "Overbought":
         risks.append("RSI is overbought; a short-term pullback is a risk")
-    if valuation.get("valuation_signal") == "overvalued":
+    if valuation.get("valuation_reliable") is not False and valuation.get("valuation_signal") == "overvalued":
         up = _to_float_or_none(valuation.get("upside_pct")) or 0.0
         risks.append(f"Valuation looks rich by {abs(up):.1f}%")
     if fundamental.get("signals", {}).get("financial_health") in ("Caution", "Risk"):
@@ -292,17 +300,8 @@ def pick_top_stocks(all_data: dict[str, Any], top_n: int = 3) -> dict[str, Any]:
     passed = [x for x in analyzed if x.get("passes_filter")]
     picks = passed[:top_n]
 
-    # Market snapshot from SPY
-    spy_price = None
-    spy_change_pct = None
-    spy_raw = all_data.get("SPY")
-    if isinstance(spy_raw, dict):
-        ph = spy_raw.get("price_history")
-        if isinstance(ph, pd.DataFrame) and "Close" in ph.columns and len(ph) >= 2:
-            c = pd.to_numeric(ph["Close"], errors="coerce").dropna()
-            if len(c) >= 2:
-                spy_price = float(c.iloc[-1])
-                spy_change_pct = float((c.iloc[-1] / c.iloc[-2] - 1.0) * 100.0)
+    # SPY is not in the 60-name universe, so the batch never contains it.
+    spy_price, spy_change_pct = fetch_spy_quote()
 
     all_scores = [
         {
@@ -371,8 +370,14 @@ def _print_top3_report(result: dict[str, Any]) -> None:
     print("\n=== Daily top picks ===")
     print(f"Date: {result.get('date')}")
     m = result.get("market_overview", {})
+    spy_price = m.get("spy_price")
+    spy_change = m.get("spy_change_pct")
+    if spy_price is None or spy_change is None:
+        market_txt = "SPY unavailable"
+    else:
+        market_txt = f"SPY={spy_price} ({spy_change:+.2f}%)"
     print(
-        f"Market: SPY={m.get('spy_price')} ({m.get('spy_change_pct')}%), "
+        f"Market: {market_txt}, "
         f"analyzed {m.get('total_analyzed')}, passed filter {m.get('passed_filter')}"
     )
     print("-" * 80)

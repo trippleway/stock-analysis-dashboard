@@ -1,5 +1,5 @@
 {
-  "snapshot_time": "2026-11-07T23:24:07",
+  "snapshot_time": "2026-11-07T23:49:22",
   "summary": {
     "total_recommendations": 31,
     "completed_1m": 27,
@@ -59,8 +59,8 @@
   ],
   "cumulative": {
     "strategy_cumulative_return": 0.342985,
-    "spy_cumulative_return": 0.075013,
-    "outperformance": 0.267972,
+    "spy_cumulative_return": 0.07225,
+    "outperformance": 0.270735,
     "trading_days": 56,
     "date_range": {
       "start": "2026-04-21",
@@ -166,21 +166,21 @@
       0.07208,
       0.065689,
       0.05238,
-      0.063322,
-      0.059976,
-      0.044583,
-      0.044099,
-      0.045608,
-      0.038047,
-      0.055148,
-      0.063365,
-      0.061927,
-      0.060531,
-      0.069787,
-      0.064703,
-      0.061414,
-      0.070399,
-      0.075013
+      0.06059,
+      0.057252,
+      0.041899,
+      0.041416,
+      0.042921,
+      0.035379,
+      0.052437,
+      0.060632,
+      0.059198,
+      0.057806,
+      0.067038,
+      0.061967,
+      0.058687,
+      0.067649,
+      0.07225
     ],
     "dates": [
       "2026-04-21",
@@ -287,7 +287,7 @@
     "top_contributor": {
       "ticker": "MU",
       "contribution": 0.294742,
-      "share_of_outperformance": 1.0999,
+      "share_of_outperformance": 1.0887,
       "picks": 7
     },
     "concentration_warning": "Performance is highly concentrated in one name, so the sample is a weak representation"
