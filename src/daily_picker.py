@@ -107,7 +107,7 @@ def _build_pick_reasons(
     if (_to_float_or_none(fundamental.get("sub_scores", {}).get("profitability")) or 0.0) > 85:
         reasons.append("Profitability is strong")
     if sector in ("semiconductor", "ai_software"):
-        reasons.append("In a favored AI or semiconductor group")
+        reasons.append("In a peer group with a favorable industry outlook")
     if news.get("sentiment_label") == "Strongly Bullish":
         reasons.append("Recent news is strongly positive")
     if news.get("sentiment_label") == "Bullish" and int(news.get("positive_count", 0) or 0) >= 3:

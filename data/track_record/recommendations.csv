@@ -29,3 +29,4 @@ date,ticker,sector,top_rank,entry_price,spy_price_entry,composite_score,tech_sco
 2026-11-07,MU,semiconductor,1,690.0,,77.19,61.25,93.5,95.0,75.0,50.0,785.1644,13.79,2371.4213,undervalued,,,,,,,,,,,,open
 2026-11-07,APP,ai_software,2,391.22,,76.45,64.5,89.3,95.0,60.0,50.0,403.9057,3.24,582.9998,undervalued,,,,,,,,,,,,open
 2026-11-07,LRCX,semiconductor,3,200.44,,75.69,55.25,93.5,95.0,75.0,50.0,219.8685,9.69,280.986,undervalued,,,,,,,,,,,,open
+2026-11-07,INTU,ai_software,2,341.5,,75.41,70.5,76.3,95.0,75.0,52.09,363.9256,6.57,532.1711,undervalued,,,,,,,,,,,,open

@@ -28,7 +28,7 @@ if str(ROOT) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from config import ALL_STOCKS, PICKS_DIR, SECTOR_MAP, TICKER_LIST  # noqa: E402
+from config import AI_LAYERS, ALL_STOCKS, PICKS_DIR, SECTOR_MAP, TICKER_LIST  # noqa: E402
 from data_collector import fetch_stock_data  # noqa: E402
 from entry_price import calculate_entry_prices, get_status_emoji, get_status_label_cn  # noqa: E402
 from profile_fetcher import get_profile  # noqa: E402
@@ -968,6 +968,36 @@ def render_deep_page(daily: dict[str, Any]) -> None:
                         st.link_button("📖 Read original", link, use_container_width=False)
 
 
+# Published names for the keys in config.AI_LAYERS. The keys stay internal.
+_LAYER_NAMES = {
+    "layer1_infrastructure": "Layer 1 Infrastructure",
+    "layer2_cloud": "Layer 2 Cloud & compute",
+    "layer3_foundation": "Layer 3 Foundation models",
+    "layer4_platform": "Layer 4 Data platforms",
+    "layer5_applications": "Layer 5 AI applications",
+    "layer6_consumer": "Layer 6 Consumer & content",
+}
+
+
+def _ai_layer_name(ticker: str) -> str:
+    """Look up the AI value-chain layer for one ticker.
+
+    Membership comes from config.AI_LAYERS. The returned name is the
+    published label for that key.
+
+    Args:
+        ticker: Ticker symbol.
+
+    Returns:
+        The layer name, or "—" when the ticker is in no layer.
+    """
+    sym = str(ticker).strip().upper()
+    for key, tickers in AI_LAYERS.items():
+        if sym in tickers:
+            return _LAYER_NAMES.get(key, key)
+    return "—"
+
+
 def render_overview_page(daily: dict[str, Any]) -> None:
     """Page 3: stock overview."""
     st.title("📋 Stock overview")
@@ -986,7 +1016,8 @@ def render_overview_page(daily: dict[str, Any]) -> None:
             "prediction_return_pct": "Forecast",
         }
     )
-    df["Sector"] = df["Ticker"].apply(get_stock_sector)
+    df["Layer"] = df["Ticker"].map(_ai_layer_name)
+    df["Peer group"] = df["Ticker"].apply(get_stock_sector)
     price_map = {}
     for p in daily.get("picks", []):
         price_map[p.get("ticker")] = p.get("current_price")
@@ -999,7 +1030,7 @@ def render_overview_page(daily: dict[str, Any]) -> None:
         filled_prices = {t: get_cached_current_price(t) for t in missing_tickers}
         df.loc[missing_mask, "Price"] = df.loc[missing_mask, "Ticker"].map(filled_prices)
 
-    df = df[["Ticker", "Company", "Price", "Composite Score", "Technical", "Fundamental", "Valuation", "Forecast", "Sector"]]
+    df = df[["Ticker", "Layer", "Peer group", "Company", "Price", "Composite Score", "Technical", "Fundamental", "Valuation", "Forecast"]]
     df = df.sort_values("Composite Score", ascending=False).reset_index(drop=True)
 
     tickers_list = df["Ticker"].astype(str).tolist()
@@ -1032,14 +1063,14 @@ def render_overview_page(daily: dict[str, Any]) -> None:
     )
 
     keyword = st.text_input("Search ticker or company")
-    sectors = sorted(df["Sector"].dropna().unique().tolist())
-    sector_sel = st.multiselect("Filter by sector", sectors)
+    sectors = sorted(df["Peer group"].dropna().unique().tolist())
+    sector_sel = st.multiselect("Filter by peer group", sectors)
     only_buy_now = st.checkbox("Only show 🟢 ready to enter (buy_now)", value=False)
     filtered = df.copy()
     if keyword:
         filtered = filtered[filtered["Ticker"].str.contains(keyword, case=False) | filtered["Company"].str.contains(keyword, case=False)]
     if sector_sel:
-        filtered = filtered[filtered["Sector"].isin(sector_sel)]
+        filtered = filtered[filtered["Peer group"].isin(sector_sel)]
     if only_buy_now:
         filtered = filtered[filtered["_entry_status"] == "buy_now"]
 
@@ -1214,7 +1245,7 @@ def _render_perf_records() -> None:
         {
             "Date": view["date"].astype(str),
             "Ticker": view["ticker"].astype(str),
-            "Sector": view.get("sector", pd.Series(dtype=str)).astype(str),
+            "Peer group": view.get("sector", pd.Series(dtype=str)).astype(str),
             "Rank": pd.to_numeric(view.get("top_rank"), errors="coerce"),
             "Entry Price": pd.to_numeric(view.get("entry_price"), errors="coerce").map(
                 lambda v: f"${v:.2f}" if pd.notna(v) else "—"

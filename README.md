@@ -38,6 +38,14 @@ Layer 5  AI applications     12  CRM, NOW, ADBE, INTU, TTD, APP …
 Layer 6  Consumer & content  10  SPOT, NFLX, RBLX, DUOL, SONY …
 ```
 
+**Two classification axes.** The six layers organise the universe thematically,
+by position in the AI value chain. Valuation uses a separate, coarser peer
+grouping of three buckets — semiconductor (15), AI software (33), consumer (12)
+— because P/E comparison needs enough names per bucket to be meaningful, and
+because the six layers cut across very different multiple ranges. Layer 5 alone
+spans names that do not share a fair-value band. The dashboard labels these
+separately as Layer and Peer group.
+
 **Track record** — Each day's picks are logged with entry price and scores, and
 forward returns are backfilled at 1 day / 1 week / 2 weeks / 1 month against SPY.
 
