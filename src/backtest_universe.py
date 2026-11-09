@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-回測用時點股票池：用「該日期當時」的 NASDAQ-100 成分股，避開 survivorship bias。
+Point-in-time universe for backtests: the NASDAQ-100 constituents on that date, so the backtest avoids survivorship bias.
 
-今天手動挑的 60 檔，是被這幾年漲幅篩過的贏家。拿這份名單回測 3 年前，
-等於偷看了未來。本模組改問 nasdaq-100-ticker-history：
-某個歷史日期當天，指數裡實際有哪些股票。
+Today's hand-picked 60 names were screened by the gains of the last few years. Backtesting that list from 3 years ago
+would peek at the future. This module asks nasdaq-100-ticker-history
+which stocks were actually in the index on a historical date.
 
-依賴（PyPI 目前沒有發佈版，需從 GitHub 安裝）：
+Dependency (PyPI has no release; install from GitHub):
     pip install "nasdaq-100-ticker-history @ git+https://github.com/jmccarrell/n100tickers.git"
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/backtest_universe.py
 """
 
@@ -33,9 +33,9 @@ if str(_SRC) not in sys.path:
 
 try:
     from nasdaq_100_ticker_history import tickers_as_of
-except ImportError as exc:  # pragma: no cover - 環境缺套件時給安裝指令
+except ImportError as exc:  # pragma: no cover - install hint when the package is missing
     raise ImportError(
-        "找不到 nasdaq-100-ticker-history。請安裝："
+        "nasdaq-100-ticker-history was not found. Install it:"
         ' pip install "nasdaq-100-ticker-history @ git+https://github.com/jmccarrell/n100tickers.git"'
     ) from exc
 
@@ -47,8 +47,8 @@ if not _log.handlers:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-# 取樣頻率對應 pandas offset。季度用季初（1/1、4/1、7/1、10/1），
-# 讓「2023 Q1」對上 2023-01-01 當天的真實成分股，而不是季末才看。
+# Sample frequency mapped to a pandas offset. Quarterly uses the start of the quarter (1/1, 4/1, 7/1, 10/1),
+# so "2023 Q1" is the real constituent list on 2023-01-01, not a look at quarter-end.
 _FREQ_TO_PANDAS: dict[str, str] = {
     "quarterly": "QS",
     "monthly": "MS",
@@ -56,27 +56,27 @@ _FREQ_TO_PANDAS: dict[str, str] = {
     "daily": "D",
 }
 
-# yfinance info["exchange"] 的 NASDAQ 掛牌代碼。
-# NMS / NGM / NCM 分別是 Nasdaq Global Select / Global / Capital。
+# NASDAQ listing codes in yfinance info["exchange"].
+# NMS / NGM / NCM are Nasdaq Global Select / Global / Capital.
 _NASDAQ_EXCHANGE_CODES = frozenset({"NMS", "NGM", "NCM", "NAS", "NASDAQ"})
 _YF_CALL_SLEEP_SEC = 0.7
 _YF_RETRY_DELAYS = (1.0, 2.0, 4.0)
 
 
 class UniverseCoverageError(RuntimeError):
-    """查詢日超出 nasdaq-100-ticker-history 涵蓋範圍，或套件回傳空名單。"""
+    """The query date is outside the coverage of nasdaq-100-ticker-history, or the package returned an empty list."""
 
 
 def _coerce_date(value: date | datetime | str, name: str) -> date:
     """
-    把 date / datetime / ISO 字串轉成 date。
+    Turn a date, datetime, or ISO string into a date.
 
-    參數:
-        value: 日期輸入。
-        name: 參數名稱，用於錯誤訊息。
+    Args:
+        value: Date input.
+        name: Parameter name, used in the error message.
 
-    回傳:
-        datetime.date。
+    Returns:
+        datetime.date.
     """
     if isinstance(value, datetime):
         return value.date()
@@ -87,52 +87,52 @@ def _coerce_date(value: date | datetime | str, name: str) -> date:
         try:
             return date.fromisoformat(text[:10])
         except ValueError as exc:
-            raise ValueError(f"{name} 不是合法日期：{value!r}，請用 YYYY-MM-DD") from exc
-    raise TypeError(f"{name} 須為 date，收到 {type(value).__name__}")
+            raise ValueError(f"{name} is not a valid date: {value!r}. Use YYYY-MM-DD") from exc
+    raise TypeError(f"{name} must be a date, got {type(value).__name__}")
 
 
 def _validate_range(start: date, end: date) -> None:
-    """起始日不可晚於結束日。"""
+    """The start date cannot be after the end date."""
     if start > end:
         raise ValueError(
-            f"start_date ({start.isoformat()}) 晚於 end_date ({end.isoformat()})"
+            f"start_date ({start.isoformat()}) is after end_date ({end.isoformat()})"
         )
 
 
 def _membership_as_of(as_of: date) -> set[str]:
     """
-    取得單一日期的 NASDAQ-100 成分股。
+    Load the NASDAQ-100 constituents for one date.
 
-    套件缺該年資料時會丟 NotImplementedError；這裡改成
-    UniverseCoverageError，訊息寫明是哪個日期超出涵蓋範圍。
-    回傳空集合同樣視為失敗，避免回測靜默用到空股票池。
+    When the package has no data for that year it raises NotImplementedError. This turns that into
+    UniverseCoverageError and names the date that is outside coverage.
+    An empty set is also a failure, so a backtest does not continue silently with an empty universe.
 
-    參數:
-        as_of: 查詢日（含當天生效的指數調整）。
+    Args:
+        as_of: Query date (index changes effective that day are included).
 
-    回傳:
-        當天成分股代號集合（大寫）。
+    Returns:
+        The set of constituent symbols that day (uppercase).
     """
     label = as_of.isoformat()
     try:
         raw = tickers_as_of(as_of.year, as_of.month, as_of.day)
     except NotImplementedError as exc:
         message = (
-            f"無法取得 {label} 的 NASDAQ-100 成分股："
-            f"該日期超出 nasdaq-100-ticker-history 涵蓋範圍。原始錯誤：{exc}"
+            f"Cannot load NASDAQ-100 constituents for {label}: "
+            f"that date is outside the coverage of nasdaq-100-ticker-history. Original error: {exc}"
         )
         _log.error(message)
         raise UniverseCoverageError(message) from exc
     except Exception as exc:
-        message = f"無法取得 {label} 的 NASDAQ-100 成分股：{exc}"
+        message = f"Cannot load NASDAQ-100 constituents for {label}: {exc}"
         _log.error(message)
         raise UniverseCoverageError(message) from exc
 
     symbols = {str(ticker).upper().strip() for ticker in raw if str(ticker).strip()}
     if not symbols:
         message = (
-            f"無法取得 {label} 的 NASDAQ-100 成分股："
-            "套件回傳空集合，視為超出涵蓋範圍或資料異常，拒絕靜默繼續。"
+            f"Cannot load NASDAQ-100 constituents for {label}: "
+            "the package returned an empty set. That is treated as outside coverage or bad data, and the run will not continue silently."
         )
         _log.error(message)
         raise UniverseCoverageError(message)
@@ -141,22 +141,22 @@ def _membership_as_of(as_of: date) -> set[str]:
 
 def _sample_dates(start: date, end: date, freq: str) -> list[date]:
     """
-    在區間內依頻率產生取樣日。回測起點若不是頻率邊界，仍會納入，
-    否則起點到第一個取樣日之間沒有股票池。
+    Build sample dates inside the range. The backtest start is included even when it is not a frequency boundary,
+    otherwise there is no universe between the start and the first sample date.
 
-    參數:
-        start: 區間起日（含）。
-        end: 區間迄日（含）。
-        freq: quarterly / monthly / yearly / daily。
+    Args:
+        start: Range start (inclusive).
+        end: Range end (inclusive).
+        freq: quarterly / monthly / yearly / daily.
 
-    回傳:
-        由早到晚的 date 列表。
+    Returns:
+        A list of dates from earliest to latest.
     """
     key = freq.strip().lower()
     pandas_freq = _FREQ_TO_PANDAS.get(key)
     if pandas_freq is None:
         allowed = ", ".join(_FREQ_TO_PANDAS)
-        raise ValueError(f"不支援的取樣頻率 {freq!r}，請用 {allowed}")
+        raise ValueError(f"Unsupported sample frequency {freq!r}. Use {allowed}")
 
     stamps = pd.date_range(start=start, end=end, freq=pandas_freq)
     dates = [ts.date() for ts in stamps]
@@ -171,7 +171,7 @@ def _sample_dates(start: date, end: date, freq: str) -> list[date]:
             out.append(sample)
     if not out:
         raise ValueError(
-            f"在 {start.isoformat()} 到 {end.isoformat()} 之間沒有取樣日（freq={freq}）"
+            f"No sample dates between {start.isoformat()} and {end.isoformat()} (freq={freq})"
         )
     return out
 
@@ -182,18 +182,18 @@ def get_point_in_time_universe(
     freq: str = "quarterly",
 ) -> dict[date, set[str]]:
     """
-    依頻率取出每個時點「當天」的 NASDAQ-100 成分股。
+    Return the NASDAQ-100 constituents that were in the index on each sample date.
 
-    quarterly 對齊季初：2023 Q1 用 2023-01-01 的名單，2024 Q1 用 2024-01-01，
-    全程不共用同一份清單。任一取樣日超出套件涵蓋範圍會直接拋錯。
+    quarterly aligns to the start of the quarter: 2023 Q1 uses the 2023-01-01 list, 2024 Q1 uses 2024-01-01,
+    and the whole run does not share one list. A sample date outside the package coverage raises immediately.
 
-    參數:
-        start_date: 回測起始日（含）。
-        end_date: 回測結束日（含）。
-        freq: 取樣頻率，預設 quarterly。
+    Args:
+        start_date: Backtest start (inclusive).
+        end_date: Backtest end (inclusive).
+        freq: Sample frequency. Defaults to quarterly.
 
-    回傳:
-        {取樣日: 當天成分股集合}，依日期由早到晚。
+    Returns:
+        {sample date: constituent set that day}, ordered from earliest to latest.
     """
     start = _coerce_date(start_date, "start_date")
     end = _coerce_date(end_date, "end_date")
@@ -205,7 +205,7 @@ def get_point_in_time_universe(
         universe[sample] = _membership_as_of(sample)
 
     _log.info(
-        "時點股票池 %s ~ %s（%s）：%s 個時點",
+        "Point-in-time universe %s to %s (%s): %s dates",
         start.isoformat(),
         end.isoformat(),
         freq,
@@ -216,17 +216,17 @@ def get_point_in_time_universe(
 
 def get_union_universe(start_date: date, end_date: date) -> set[str]:
     """
-    回傳整段期間內曾經進過 NASDAQ-100 的成分股聯集。
+    Return the union of every name that entered the NASDAQ-100 during the range.
 
-    用逐日成分股取聯集，而不是只併每季快照。季中才納入、季末前又被剔除的
-    股票，季度快照會漏掉；抓歷史價格時範圍會不夠。
+    The union is taken from daily constituents, not from quarterly snapshots only. A name added mid-quarter
+    and removed before quarter-end would be missed by a quarterly snapshot, and the price download would be incomplete.
 
-    參數:
-        start_date: 區間起日（含）。
-        end_date: 區間迄日（含）。
+    Args:
+        start_date: Range start (inclusive).
+        end_date: Range end (inclusive).
 
-    回傳:
-        期間內至少出現過一天的代號集合。
+    Returns:
+        Symbols that appeared on at least one day during the range.
     """
     start = _coerce_date(start_date, "start_date")
     end = _coerce_date(end_date, "end_date")
@@ -240,7 +240,7 @@ def get_union_universe(start_date: date, end_date: date) -> set[str]:
         cursor += step
 
     _log.info(
-        "歷史成分股聯集 %s ~ %s：%s 檔",
+        "Historical constituent union %s to %s: %s names",
         start.isoformat(),
         end.isoformat(),
         len(union),
@@ -250,49 +250,49 @@ def get_union_universe(start_date: date, end_date: date) -> set[str]:
 
 def _is_nasdaq_listed(exchange: str) -> bool:
     """
-    依 yfinance info['exchange'] 判斷是否在 NASDAQ 掛牌。
+    Decide from yfinance info['exchange'] whether the name is listed on NASDAQ.
 
-    參數:
-        exchange: Yahoo 交易所代碼，例如 NMS、NYQ。
+    Args:
+        exchange: Yahoo exchange code, for example NMS or NYQ.
 
-    回傳:
-        True 表示 NASDAQ 掛牌。
+    Returns:
+        True when the name is listed on NASDAQ.
     """
     code = exchange.strip().upper()
     if code in _NASDAQ_EXCHANGE_CODES:
         return True
-    # 少數環境會回傳 NasdaqGS / NasdaqGM，而不是 NMS / NGM
+    # A few environments return NasdaqGS / NasdaqGM instead of NMS / NGM.
     return "NASDAQ" in code
 
 
 def _quote_missing(ticker: str) -> bool:
     """
-    看近端日線是否完全沒有資料。Yahoo 對已下市代號常回 404，info 也不會有 exchange。
+    Whether recent daily bars are completely missing. Yahoo often returns 404 for a delisted symbol, and info then has no exchange.
 
-    參數:
-        ticker: 股票代號。
+    Args:
+        ticker: Ticker symbol.
 
-    回傳:
-        True 表示沒有可用報價。
+    Returns:
+        True when there is no usable quote.
     """
     try:
         hist = yf.Ticker(ticker).history(period="5d")
     except Exception as exc:  # noqa: BLE001
-        _log.warning("讀取 %s 近期報價失敗: %s", ticker, exc)
+        _log.warning("Failed to read a recent quote for %s: %s", ticker, exc)
         return False
     return hist is None or hist.empty
 
 
 def _fetch_exchange(ticker: str) -> tuple[str | None, str]:
     """
-    讀取 yfinance info['exchange']。暫時性失敗重試 3 次，呼叫之間會停頓。
+    Read yfinance info['exchange']. A transient failure is retried 3 times, with a pause between calls.
 
-    參數:
-        ticker: 股票代號。
+    Args:
+        ticker: Ticker symbol.
 
-    回傳:
-        (交易所代碼, 失敗原因)。成功時失敗原因為空字串。
-        已下市、報價 404 不會重試，原因會寫明 info 沒有 exchange。
+    Returns:
+        (exchange code, failure reason). The failure reason is an empty string on success.
+        A delisted name with a 404 quote is not retried. The reason says info has no exchange.
     """
     last_err: Exception | None = None
     for attempt in range(3):
@@ -302,18 +302,18 @@ def _fetch_exchange(ticker: str) -> tuple[str | None, str]:
             exchange = info.get("exchange") if isinstance(info, dict) else None
             if isinstance(exchange, str) and exchange.strip():
                 return exchange.strip(), ""
-            # 有回應但沒有 exchange：下市代號重試也不會補上這個欄位
+            # There was a response but no exchange. Retrying a delisted symbol will not fill this field.
             if isinstance(info, dict) and info and _quote_missing(ticker):
-                reason = "Yahoo 無報價（可能已下市），info.exchange 為空"
-                _log.warning("無法判斷 %s 的交易所：%s", ticker, reason)
+                reason = "Yahoo has no quote (it may be delisted), and info.exchange is empty"
+                _log.warning("Cannot tell the exchange for %s: %s", ticker, reason)
                 return None, reason
-            last_err = ValueError("info.exchange 為空")
-        except Exception as exc:  # noqa: BLE001 — 單檔失敗改走重試，不中斷整批分類
+            last_err = ValueError("info.exchange is empty")
+        except Exception as exc:  # noqa: BLE001 — a single-name failure is retried and does not stop the batch
             last_err = exc
         if attempt < 2:
             time.sleep(_YF_RETRY_DELAYS[attempt])
-    reason = f"已重試 3 次仍失敗：{last_err}"
-    _log.warning("無法判斷 %s 的交易所（%s）", ticker, reason)
+    reason = f"Still failing after 3 attempts: {last_err}"
+    _log.warning("Cannot tell the exchange for %s (%s)", ticker, reason)
     return None, reason
 
 
@@ -321,15 +321,15 @@ def _split_only_in_current(
     tickers: list[str],
 ) -> tuple[list[str], list[str], list[str], dict[str, str]]:
     """
-    把「只在目前清單」的股票分成兩類。
+    Split names that are only on the current list into two groups.
 
-    參數:
-        tickers: only_in_current 代號。
+    Args:
+        tickers: Symbols in only_in_current.
 
-    回傳:
-        (not_nasdaq_listed, nasdaq_but_excluded, exchange_unknown, unknown_reasons)。
-        前兩類分別是「交易所不是 NASDAQ」與「NASDAQ 掛牌但沒進過指數」。
-        查不到 exchange 的放在第三類，不猜邊。
+    Returns:
+        (not_nasdaq_listed, nasdaq_but_excluded, exchange_unknown, unknown_reasons).
+        The first two are "exchange is not NASDAQ" and "listed on NASDAQ but never in the index".
+        Names with no exchange go in the third group. They are not guessed into either side.
     """
     not_nasdaq: list[str] = []
     nasdaq_excluded: list[str] = []
@@ -339,14 +339,14 @@ def _split_only_in_current(
         exchange, reason = _fetch_exchange(ticker)
         if exchange is None:
             unknown.append(ticker)
-            unknown_reasons[ticker] = reason or "info.exchange 為空"
+            unknown_reasons[ticker] = reason or "info.exchange is empty"
             continue
         if _is_nasdaq_listed(exchange):
             nasdaq_excluded.append(ticker)
-            _log.info("%s 交易所=%s → NASDAQ 掛牌但未進指數", ticker, exchange)
+            _log.info("%s exchange=%s -> listed on NASDAQ but not in the index", ticker, exchange)
         else:
             not_nasdaq.append(ticker)
-            _log.info("%s 交易所=%s → 非 NASDAQ 掛牌", ticker, exchange)
+            _log.info("%s exchange=%s -> not listed on NASDAQ", ticker, exchange)
     return sorted(not_nasdaq), sorted(nasdaq_excluded), sorted(unknown), unknown_reasons
 
 
@@ -355,27 +355,27 @@ def compare_universes(
     point_in_time_union: set[str],
 ) -> dict[str, list[str] | float | dict[str, str]]:
     """
-    對比「今天手動清單」與「歷史時點成分股聯集」。
+    Compare today's hand-picked list with the historical point-in-time constituent union.
 
-    overlap_pct 是目前清單中、曾經出現在歷史 NASDAQ-100 的比例（0-100）。
-    分母是目前清單檔數，不是歷史聯集：問題是今天挑的股票有多少真的
-    在當時指數裡，而不是兩份名單的 Jaccard 相似度。
-    代號依字面比對（FB 與 META 視為不同代號，因為指數當時用的就是舊代號）。
+    overlap_pct is the share of the current list that appeared in the historical NASDAQ-100 (0-100).
+    The denominator is the number of names on the current list, not the historical union. The question is
+    how many of today's picks were actually in the index then, not the Jaccard similarity of the two lists.
+    Symbols are compared literally (FB and META are different symbols, because the index used the old symbol at the time).
 
-    only_in_current 會再用 yfinance info['exchange'] 拆成：
-    - not_nasdaq_listed：交易所不是 NASDAQ，指數範圍本來就不涵蓋
-    - nasdaq_but_excluded：NASDAQ 掛牌，但這段歷史沒進過 NASDAQ-100
-    查不到交易所的放在 exchange_unknown，不併入上面兩類。
-    exchange_unknown_reasons 記錄每一檔沒歸類的原因。
+    only_in_current is split again with yfinance info['exchange']:
+    - not_nasdaq_listed: the exchange is not NASDAQ, so the index scope never covered it
+    - nasdaq_but_excluded: listed on NASDAQ, but it did not enter the NASDAQ-100 during this history
+    Names with no exchange go in exchange_unknown and are not merged into the two groups above.
+    exchange_unknown_reasons records why each name was not classified.
 
-    參數:
-        current_list: 目前手動選股清單。
-        point_in_time_union: get_union_universe 的結果。
+    Args:
+        current_list: The current hand-picked list.
+        point_in_time_union: The result of get_union_universe.
 
-    回傳:
-        only_in_current、only_in_historical、overlap、overlap_pct，
-        以及 not_nasdaq_listed、nasdaq_but_excluded、exchange_unknown、
-        exchange_unknown_reasons。
+    Returns:
+        only_in_current, only_in_historical, overlap, overlap_pct,
+        plus not_nasdaq_listed, nasdaq_but_excluded, exchange_unknown,
+        exchange_unknown_reasons.
     """
     current = {str(ticker).upper().strip() for ticker in current_list if str(ticker).strip()}
     historical = {
@@ -400,10 +400,10 @@ def compare_universes(
 
 
 def _print_ticker_block(title: str, tickers: list[str]) -> None:
-    """印出一組代號：先給數量，再逐列輸出，避免一行過長。"""
-    print(f"{title}（{len(tickers)} 檔）")
+    """Print one group of symbols: the count first, then one row at a time, so a line does not get too long."""
+    print(f"{title} ({len(tickers)} names)")
     if not tickers:
-        print("  （無）")
+        print("  (none)")
         return
     line: list[str] = []
     for ticker in tickers:
@@ -421,24 +421,24 @@ if __name__ == "__main__":
     start = date(2022, 1, 1)
     end = date.today()
     print(
-        f"NASDAQ-100 時點股票池：{start.isoformat()} ~ {end.isoformat()}，每季一個時點",
+        f"NASDAQ-100 point-in-time universe: {start.isoformat()} to {end.isoformat()}, one date per quarter",
         flush=True,
     )
 
     universes = get_point_in_time_universe(start, end, freq="quarterly")
-    print("=== 每季成分股數量 ===", flush=True)
+    print("=== Constituent count by quarter ===", flush=True)
     for sample, members in universes.items():
-        print(f"  {sample.isoformat()}  {len(members):3d} 檔", flush=True)
+        print(f"  {sample.isoformat()}  {len(members):3d} names", flush=True)
 
     union = get_union_universe(start, end)
     quarter_sizes = [len(members) for members in universes.values()]
-    print(f"期間聯集大小: {len(union)} 檔", flush=True)
+    print(f"Union size over the window: {len(union)} names", flush=True)
     print(
-        f"單季規模: min={min(quarter_sizes)}  max={max(quarter_sizes)}（指數約 100 檔，季中調整會有個位數出入）",
+        f"Single-quarter size: min={min(quarter_sizes)}  max={max(quarter_sizes)} (the index is about 100 names; mid-quarter changes move the count by a few)",
         flush=True,
     )
     if len(union) < max(quarter_sizes):
-        raise RuntimeError("聯集小於單季成分股數，時點名單計算有誤")
+        raise RuntimeError("The union is smaller than a single quarter, so the point-in-time lists are wrong")
 
     report = compare_universes(TICKER_LIST, union)
     overlap_pct = float(report["overlap_pct"])
@@ -446,18 +446,18 @@ if __name__ == "__main__":
     only_historical = list(report["only_in_historical"])
     overlap = list(report["overlap"])
 
-    print("=== 目前 60 檔 vs 2022 至今 NASDAQ-100 聯集 ===", flush=True)
-    print(f"目前清單: {len(TICKER_LIST)} 檔", flush=True)
-    print(f"重疊: {len(overlap)} 檔", flush=True)
+    print("=== Current 60 names vs the NASDAQ-100 union from 2022 ===", flush=True)
+    print(f"Current list: {len(TICKER_LIST)} names", flush=True)
+    print(f"Overlap: {len(overlap)} names", flush=True)
     print(
-        f"overlap_pct: {overlap_pct:.2f}%（目前清單中，曾經進入這段歷史 NASDAQ-100 的比例）",
+        f"overlap_pct: {overlap_pct:.2f}% (share of the current list that entered this stretch of NASDAQ-100 history)",
         flush=True,
     )
-    _print_ticker_block("只在目前清單、這段歷史從沒進過 NASDAQ-100", only_current)
-    _print_ticker_block("重疊", overlap)
-    _print_ticker_block("只在歷史 NASDAQ-100、目前清單沒有", only_historical)
+    _print_ticker_block("Only on the current list, never in this NASDAQ-100 history", only_current)
+    _print_ticker_block("Overlap", overlap)
+    _print_ticker_block("Only in historical NASDAQ-100, not on the current list", only_historical)
     print(
-        "代號依字面比對：例如 2022 上半年指數用的是 FB，不是 META。",
+        "Symbols are compared literally: for example the index used FB, not META, in the first half of 2022.",
         flush=True,
     )
 
@@ -467,29 +467,29 @@ if __name__ == "__main__":
     classified = len(not_nasdaq) + len(nasdaq_excluded) + len(unknown)
     if classified != len(only_current):
         raise RuntimeError(
-            f"only_in_current 拆分數量不符：{classified} != {len(only_current)}"
+            f"only_in_current split counts do not add up: {classified} != {len(only_current)}"
         )
 
-    print("=== only_in_current 依交易所拆分 ===", flush=True)
+    print("=== only_in_current split by exchange ===", flush=True)
     print(
-        "not_nasdaq_listed：交易所不是 NASDAQ。指數範圍本來就不涵蓋，不是 survivorship bias。",
+        "not_nasdaq_listed: the exchange is not NASDAQ. The index scope never covered these names. This is not survivorship bias.",
         flush=True,
     )
     _print_ticker_block("not_nasdaq_listed", not_nasdaq)
     print(
-        "nasdaq_but_excluded：NASDAQ 掛牌，但這段歷史沒進過 NASDAQ-100。"
-        "這才是今天篩、過去不在成分股裡。",
+        "nasdaq_but_excluded: listed on NASDAQ, but it did not enter the NASDAQ-100 during this history. "
+        "These are the names screened today that were not constituents in the past.",
         flush=True,
     )
     _print_ticker_block("nasdaq_but_excluded", nasdaq_excluded)
     if unknown:
         reasons = report["exchange_unknown_reasons"]
         print(
-            "exchange_unknown：yfinance info 沒有 exchange，未歸入上面兩類。",
+            "exchange_unknown: yfinance info has no exchange, so these names were not placed in either group above.",
             flush=True,
         )
-        print(f"exchange_unknown（{len(unknown)} 檔）", flush=True)
+        print(f"exchange_unknown ({len(unknown)} names)", flush=True)
         reason_map = reasons if isinstance(reasons, dict) else {}
         for ticker in unknown:
-            reason = reason_map.get(ticker, "info.exchange 為空")
-            print(f"  {ticker}（{reason}）", flush=True)
+            reason = reason_map.get(ticker, "info.exchange is empty")
+            print(f"  {ticker} ({reason})", flush=True)

@@ -1,29 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-事件驅動技術面回測：進場看當天排名，出場靠停利、停損或訊號衰退。
+Event-driven technical backtest. Entries use that day's rank. Exits use take-profit, stop-loss, or signal decay.
 
-和月度固定持有不同，這裡沒有統一的月底換股日。每個交易日若還有空位，
-且有股票進了母體前 n_buy 名，就用收盤價買進。買進之後逐日檢查出場，
-持有天數會隨個股走勢改變。
+Unlike a fixed monthly hold, there is no shared month-end rebalance. On each trading day, if a slot is open
+and a name is inside the universe's top n_buy, it is bought at the close. After entry, the exit is checked
+every day, so holding length depends on that stock's path.
 
-前視偏差的界線：
-- 進場排名只用該交易日（含）以前的技術面分數。分數來自 compute_tech_score_series。
-- 出場只走訪進場日之後、判斷日（含）以前的收盤價與排名，看到條件成立就停，不讀後面的價格。
-- 自我檢查會把價量截斷到決策日重算，並把出場重放到「少一天」的資料上。
+Lookahead boundary:
+- The entry rank uses technical scores only through that trading day, from compute_tech_score_series.
+- An exit walks closes and ranks after the entry date through the decision date. It stops when a rule hits and does not read later prices.
+- The self-check recomputes prices truncated at the decision date, and replays the exit on a series that ends one day earlier.
 
-交易成本沿用月度回測：單邊 0.15%（手續費 0.05% + 滑價 0.10%），
-買進扣一次、賣出再扣一次。仍在持有的部位只扣了買進。
+Costs match the monthly backtest: 0.15% one way (0.05% commission + 0.10% slippage),
+charged on the buy and again on the sell. A position still open has been charged only the buy.
 
-停損只在收盤價觸及時才賣，不看日內低點。收盤價可以跳過設定門檻，
-實際虧損會大於 stop_loss_pct。基準組停損設在 -10%，實測最差一筆約 -23%。
-這是回測相對實盤的已知樂觀偏差：參數看起來把虧損卡在設定值，
-成交結果並沒有。報告不要把停損寫成精準落在設定值。
+The stop sells only when the close touches it. Intraday lows are ignored. The close can gap through the threshold,
+so the realized loss can exceed stop_loss_pct. The baseline stop is -10%; the worst trade was about -23%.
+That is a known optimistic bias of the backtest versus live trading: the parameter looks like it caps the loss,
+and the fill does not. Do not describe the stop as landing exactly on the setting.
 
-10 年回測改用時點 S&P 500：每個交易日只能買當時成分股，
-不能把今天的固定名單套回 2015。大量價量下載前會先印估算並停住，
-確認後才呼叫 run_ten_year_baseline(confirm=True)。
+The 10-year run uses the point-in-time S&P 500. A day can buy only names that were in the index that day.
+Today's fixed list is not applied back to 2015. Before a large price download, the script prints an estimate and stops.
+After confirmation, call run_ten_year_baseline(confirm=True).
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/backtest_engine_v2.py
     python src/backtest_engine_v2.py --estimate-10y
 """
@@ -79,27 +79,27 @@ if not _log.handlers:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-# 分數重算容差，與 backtest_signals.verify_no_lookahead 相同
+# Score recompute tolerance, same as backtest_signals.verify_no_lookahead
 _SCORE_ATOL = 1e-6
-# 10 年時點回測的績效起點。暖機仍往前多抓，讓 MA200 在第一天已經有效。
+# Performance start for the 10-year point-in-time run. Warmup is fetched earlier so MA200 is valid on day one.
 _TEN_YEAR_START = date(2015, 1, 1)
 _OHLCV_DIR = Path(DATA_DIR) / "backtest_cache" / "ohlcv"
-# 未命中快取時，每檔大約是 0.7 秒間隔加上一次 Yahoo 請求。失敗會再試，所以上限抓寬。
+# On a cache miss, each name is about a 0.7s pause plus one Yahoo request. Failures retry, so the upper bound is loose.
 _FETCH_SEC_PER_NEW_SYMBOL = 2.0
 _FETCH_SEC_PER_NEW_SYMBOL_SLOW = 4.0
-# 逆風段 Sharpe 至少高出月度版這個幅度，才說出場規則「明顯改善」
+# Headwind Sharpe must beat the monthly version by at least this much before the exit rule is called a clear improvement.
 _SHARPE_IMPROVEMENT = 0.20
 _EXIT_LABELS = {
-    "take_profit": "停利",
-    "stop_loss": "停損",
-    "signal_decay": "訊號衰退",
-    "still_holding": "仍持有",
+    "take_profit": "Take profit",
+    "stop_loss": "Stop loss",
+    "signal_decay": "Signal decay",
+    "still_holding": "Still holding",
 }
-# 一次只改一個出場旋鈕，D 同時拉長衰退天數並放寬停損。decay_rank 全程維持 15。
+# Change one exit knob at a time. Case D lengthens decay and widens the stop together. decay_rank stays 15.
 _SENSITIVITY_CASES: tuple[dict[str, Any], ...] = (
     {
-        "label": "基準",
-        "note": "停利 25%、停損 -10%、衰退 5 天、前 15 名",
+        "label": "Baseline",
+        "note": "take profit 25%, stop -10%, decay 5 days, top 15",
         "take_profit_pct": 0.25,
         "stop_loss_pct": -0.10,
         "score_decay_days": 5,
@@ -107,7 +107,7 @@ _SENSITIVITY_CASES: tuple[dict[str, Any], ...] = (
     },
     {
         "label": "A",
-        "note": "衰退容忍改 10 天",
+        "note": "decay tolerance set to 10 days",
         "take_profit_pct": 0.25,
         "stop_loss_pct": -0.10,
         "score_decay_days": 10,
@@ -115,7 +115,7 @@ _SENSITIVITY_CASES: tuple[dict[str, Any], ...] = (
     },
     {
         "label": "B",
-        "note": "停損放寬到 -15%",
+        "note": "stop widened to -15%",
         "take_profit_pct": 0.25,
         "stop_loss_pct": -0.15,
         "score_decay_days": 5,
@@ -123,7 +123,7 @@ _SENSITIVITY_CASES: tuple[dict[str, Any], ...] = (
     },
     {
         "label": "C",
-        "note": "停利縮小到 15%",
+        "note": "take profit cut to 15%",
         "take_profit_pct": 0.15,
         "stop_loss_pct": -0.10,
         "score_decay_days": 5,
@@ -131,7 +131,7 @@ _SENSITIVITY_CASES: tuple[dict[str, Any], ...] = (
     },
     {
         "label": "D",
-        "note": "衰退 10 天且停損 -15%",
+        "note": "decay 10 days and stop -15%",
         "take_profit_pct": 0.25,
         "stop_loss_pct": -0.15,
         "score_decay_days": 10,
@@ -141,7 +141,7 @@ _SENSITIVITY_CASES: tuple[dict[str, Any], ...] = (
 
 
 def _as_stamp(value: date | pd.Timestamp | str) -> pd.Timestamp:
-    """收成無時區、午夜的時間戳。"""
+    """Normalize to a timezone-naive midnight timestamp."""
     stamp = pd.Timestamp(value)
     if stamp.tzinfo is not None:
         stamp = stamp.tz_localize(None)
@@ -149,9 +149,9 @@ def _as_stamp(value: date | pd.Timestamp | str) -> pd.Timestamp:
 
 
 def _as_series(values: pd.Series, name: str) -> pd.Series:
-    """把價格或分數收成由早到晚、無重複日期的 float 序列。"""
+    """Turn prices or scores into a float series, oldest first, with duplicate dates removed."""
     if values is None:
-        raise ValueError(f"{name} 不能是空的")
+        raise ValueError(f"{name} cannot be empty")
     series = pd.to_numeric(values, errors="coerce").astype(float)
     series.index = _as_timestamp_index(series.index)
     series = series[~series.index.duplicated(keep="last")].sort_index()
@@ -171,44 +171,44 @@ def simulate_position_exit(
     rank_series: pd.Series | None = None,
 ) -> dict[str, Any]:
     """
-    從進場日的下一個交易日起，逐日決定要不要出場。
+    From the trading day after entry, decide each day whether to exit.
 
-    當天報酬是收盤價相對進場價的累積漲跌，不是單日漲跌。
-    停利、停損都只用收盤價，不看日內高低。收盤可以跳過停損門檻，
-    實際虧損會大於 stop_loss_pct，不要把設定值當成實際成交虧損。
-    三個條件同一天都成立時，
-    優先順序是停利、停損、訊號衰退。
+    The day's return is the close versus the entry price, not the one-day change.
+    Take-profit and stop-loss use the close only, not the intraday high or low. The close can gap through the stop,
+    so the realized loss can exceed stop_loss_pct. Do not treat the setting as the fill.
+    If all three rules hit on the same day,
+    the order is take-profit, then stop-loss, then signal decay.
 
-    迴圈只走到呼叫端給的最後一筆資料。把序列截斷在出場日，
-    結果會和完整序列相同；少給一天，就不會在原來的出場日出場。
-    rank_series 是母體當天的名次（1 為最高分），由呼叫端用當天橫斷面算好。
-    連續 score_decay_days 個交易日名次低於前 score_decay_rank 名才算出場。
-    進場前的名次不計入這段連續天數。
+    The loop stops at the last bar the caller supplied. Truncating the series on the exit date
+    matches the full series. Ending one day earlier means the original exit date is not taken.
+    rank_series is that name's rank in the universe that day (1 is the highest score), computed by the caller on the cross-section.
+    Exit on signal decay only after score_decay_days consecutive trading days ranked worse than the top score_decay_rank.
+    Ranks from before the entry do not count toward that streak.
 
-    參數:
-        entry_date: 進場日。當天收盤買進，當天本身不做出場判斷。
-        entry_price: 進場收盤價。
-        entry_score: 進場當天的技術面分數，只用於和 score_series 對帳。
-        price_series: 收盤價。可以含進場日之前的歷史，函式不會拿來判斷出場。
-        score_series: 這檔的技術面分數。
-        take_profit_pct: 相對進場價上漲達到這個比例就停利。
-        stop_loss_pct: 相對進場價下跌達到這個比例就停損，應為負數。
-        score_decay_days: 名次連續落後幾天就出場。
-        score_decay_rank: 前幾名仍算訊號有效。名次大於這個數字才算跌出。
-        rank_series: 這檔每天在母體裡的名次。None 時不檢查訊號衰退。
+    Args:
+        entry_date: Entry date. The buy is at that close, and that day is not an exit decision.
+        entry_price: Entry close.
+        entry_score: Technical score on the entry day, used only to reconcile against score_series.
+        price_series: Closes. History before the entry may be included; it is not used for the exit.
+        score_series: This name's technical score.
+        take_profit_pct: Exit when the close is this far above the entry price.
+        stop_loss_pct: Exit when the close is this far below the entry price. Must be negative.
+        score_decay_days: Consecutive days of a weak rank required to exit.
+        score_decay_rank: Ranks inside this top-N still count as a live signal. A worse rank counts as decay.
+        rank_series: This name's daily rank in the universe. None skips the decay check.
 
-    回傳:
-        exit_date、exit_price、holding_days（進場到出場的日曆天）、
-        exit_reason、return_pct（價差報酬，尚未扣交易成本）。
+    Returns:
+        exit_date, exit_price, holding_days (calendar days from entry to exit),
+        exit_reason, and return_pct (price return, before trading costs).
     """
     if take_profit_pct <= 0:
-        raise ValueError(f"take_profit_pct 必須是正數，收到 {take_profit_pct}")
+        raise ValueError(f"take_profit_pct must be positive, got {take_profit_pct}")
     if stop_loss_pct >= 0:
-        raise ValueError(f"stop_loss_pct 必須是負數，收到 {stop_loss_pct}")
+        raise ValueError(f"stop_loss_pct must be negative, got {stop_loss_pct}")
     if score_decay_days < 1 or score_decay_rank < 1:
-        raise ValueError("訊號衰退的天數與名次都必須至少為 1")
+        raise ValueError("Signal-decay days and rank must both be at least 1")
     if not math.isfinite(entry_price) or entry_price <= 0:
-        raise ValueError(f"entry_price 必須是正數，收到 {entry_price}")
+        raise ValueError(f"entry_price must be positive, got {entry_price}")
 
     prices = _as_series(price_series, "price_series")
     scores = _as_series(score_series, "score_series")
@@ -219,7 +219,7 @@ def simulate_position_exit(
         observed = float(scores.loc[entry_ts])
         if math.isfinite(observed) and abs(observed - float(entry_score)) > 1e-4:
             _log.warning(
-                "%s 進場分數 %.4f 和分數序列上的 %.4f 不一致",
+                "%s entry score %.4f does not match %.4f on the score series",
                 entry_ts.date(),
                 float(entry_score),
                 observed,
@@ -234,7 +234,7 @@ def simulate_position_exit(
     for day in future:
         px = float(prices.loc[day])
         if not math.isfinite(px) or px <= 0:
-            # 當天沒有成交價，不能用後一天補，連續衰退也中斷
+            # No close today. Do not fill it from the next day, and break the decay streak.
             streak = 0
             continue
         held_return = px / float(entry_price) - 1.0
@@ -270,14 +270,14 @@ def simulate_position_exit(
 
 
 def _prepare_history(frame: pd.DataFrame) -> pd.DataFrame:
-    """把單一股票的 OHLCV 收成無時區、由早到晚的表。"""
+    """Normalize one name's OHLCV to a timezone-naive table, oldest first."""
     history = frame.copy()
     history.index = _as_timestamp_index(history.index)
     return history[~history.index.duplicated(keep="last")].sort_index()
 
 
 def _top_names(score_row: pd.Series, n_buy: int) -> list[str]:
-    """當天分數由高到低取前 n_buy 名。同分用代號字母序，結果可重現。"""
+    """Top n_buy names by that day's score. Ties break by ticker so the result is reproducible."""
     ranked = score_row.dropna()
     if ranked.empty:
         return []
@@ -289,13 +289,13 @@ def _top_names(score_row: pd.Series, n_buy: int) -> list[str]:
 
 def _headwind_dates(spy_close: pd.Series) -> set[pd.Timestamp]:
     """
-    用既有的 8% 回調定義，收集所有逆風交易日。
+    Collect every headwind trading day using the existing 8% drawdown definition.
 
-    參數:
-        spy_close: SPY 收盤價，可含回測起點之前的暖機。
+    Args:
+        spy_close: SPY closes. Warmup before the backtest start may be included.
 
-    回傳:
-        落在任一段回調區間內的日期。
+    Returns:
+        Dates that fall inside any drawdown episode.
     """
     dates: set[pd.Timestamp] = set()
     for episode in _spy_drawdown_episodes(spy_close, _DRAWDOWN_THRESHOLD):
@@ -307,7 +307,7 @@ def _headwind_dates(spy_close: pd.Series) -> set[pd.Timestamp]:
 
 
 def _mark(positions: dict[str, dict[str, Any]], close_row: pd.Series) -> float:
-    """用當天收盤價計算持倉市值。缺價格時沿用上一次成交價。"""
+    """Mark positions to that day's close. A missing price keeps the last traded price."""
     value = 0.0
     for ticker, pos in positions.items():
         px = close_row.get(ticker, np.nan)
@@ -326,19 +326,19 @@ def _cohort_returns(
     regime: str,
 ) -> pd.Series:
     """
-    只複利「進場日屬於這個環境」的部位，做成日報酬。
+    Compound only positions whose entry day belongs to this regime, as daily returns.
 
-    新資金在進場日注入，不計成報酬。買進成本記在進場日，
-    賣出成本記在出場日。出場後的現金離開這個子組合，避免空窗把 Sharpe 稀釋成 0。
-    同一天先處理出場、再處理進場。
+    New capital is added on the entry day and is not counted as a return. The buy cost is charged on the entry day
+    and the sell cost on the exit day. Cash leaves this sub-portfolio after the exit so idle gaps do not pull Sharpe toward 0.
+    On the same day, exits are applied before entries.
 
-    參數:
-        trades: 已完成模擬的交易，需含 regime、allocated、shares。
-        close: 收盤價面板。
-        regime: 順風段或逆風段。
+    Args:
+        trades: Finished simulated trades. Each needs regime, allocated, and shares.
+        close: Close panel.
+        regime: Tailwind or Headwind.
 
-    回傳:
-        這個環境有資金在場的那些交易日的日報酬。
+    Returns:
+        Daily returns on the days this regime had capital invested.
     """
     selected = [trade for trade in trades if trade["regime"] == regime]
     if not selected:
@@ -380,7 +380,7 @@ def _cohort_returns(
 
         base = prev_value + new_capital
         if base > 0:
-            # 隔夜部位的終值含賣出成本；新資金的終值含買進成本
+            # Overnight marks include the sell cost. New capital's end value includes the buy cost.
             overnight_end = mtm - exit_cost
             new_end = new_capital * (1.0 - _ONE_WAY_COST)
             index.append(day)
@@ -404,16 +404,16 @@ def _regime_stats(
     regime: str,
 ) -> dict[str, Any]:
     """
-    彙總某個進場環境的筆數、扣成本報酬、同期 SPY 與 Sharpe。
+    Summarize one entry regime: trade count, return after costs, SPY over the same days, and Sharpe.
 
-    參數:
-        trades: 全部交易。
-        close: 收盤價面板。
-        spy_ret: 與 close 對齊的 SPY 日報酬。
-        regime: 順風段或逆風段。
+    Args:
+        trades: All trades.
+        close: Close panel.
+        spy_ret: SPY daily returns aligned to close.
+        regime: Tailwind or Headwind.
 
-    回傳:
-        含 n_trades、strategy_return、spy_return、excess、sharpe、n_days 的字典。
+    Returns:
+        Dict with n_trades, strategy_return, spy_return, excess, sharpe, and n_days.
     """
     daily = _cohort_returns(trades, close, regime)
     spy = spy_ret.reindex(daily.index).fillna(0.0)
@@ -448,32 +448,32 @@ def verify_event_chain(
     max_decay_dates: int = 6,
 ) -> bool:
     """
-    檢查整條交易鏈沒有用到決策日之後的資料。
+    Check that the trade chain never uses data from after the decision date.
 
-    進場：每一筆交易把該股價量截斷到進場日（含）重算分數，必須等於當時用來下單的分數。
-    這和 verify_no_lookahead 一樣，比的是「完整樣本的第 t 天」對「只留到第 t 天」。
-    另抽若干進場日，把母體每一檔都截斷後重排，前 n_buy 名必須和回測當時相同。
+    Entry: for every trade, recompute the score on prices truncated through the entry date. It must equal the score used to place the order.
+    As in verify_no_lookahead, that compares "day t of the full sample" with "the series kept only through day t".
+    A sample of entry dates also truncates every name and re-ranks. The top n_buy must match the backtest.
 
-    出場：用截斷到出場日的價格與名次重放，出場日、價格、原因必須相同。
-    再少給一個交易日，不得仍在原來的出場日出場。
+    Exit: replay on prices and ranks truncated through the exit date. The exit date, price, and reason must match.
+    Ending the series one trading day earlier must not still exit on the original date.
 
-    參數:
-        trades: run_event_driven_backtest 產生的交易。
-        frames: 每檔的 OHLCV，用來把分數截斷重算。
-        close: 回測實際使用的收盤價面板，出場重放沿用這條日曆。
-        score: 回測使用的分數面板。
-        ranks: 回測使用的名次面板。
-        top_by_day: 每個交易日實際採用的前 n_buy 名。
-        n_buy: 進場看前幾名。
-        take_profit_pct, stop_loss_pct, score_decay_days, score_decay_rank: 與回測相同的出場參數。
-        max_entry_dates: 橫斷面重排最多抽幾天。
-        max_decay_dates: 訊號衰退出場最多抽幾天做全母體重排。
+    Args:
+        trades: Trades produced by run_event_driven_backtest.
+        frames: Per-name OHLCV, used to recompute truncated scores.
+        close: Close panel the backtest actually used. The exit replay follows this calendar.
+        score: Score panel used by the backtest.
+        ranks: Rank panel used by the backtest.
+        top_by_day: The top n_buy names actually used on each trading day.
+        n_buy: How many names the entry looks at.
+        take_profit_pct, stop_loss_pct, score_decay_days, score_decay_rank: the same exit parameters as the backtest.
+        max_entry_dates: How many days to sample for the cross-section re-rank.
+        max_decay_dates: How many signal-decay exit days to re-rank across the whole universe.
 
-    回傳:
-        True 表示全部通過。
+    Returns:
+        True when every check passes.
     """
     if not trades:
-        _log.warning("沒有交易可做前視偏差檢查")
+        _log.warning("No trades to check for lookahead")
         return False
 
     failures: list[str] = []
@@ -494,7 +494,7 @@ def verify_event_chain(
         try:
             series = compute_tech_score_series(clipped)
         except Exception as exc:  # noqa: BLE001
-            _log.warning("%s 截斷到 %s 重算分數失敗: %s", ticker, day.date(), exc)
+            _log.warning("%s score recompute truncated at %s failed: %s", ticker, day.date(), exc)
             score_cache[key] = float("nan")
             return float("nan")
         value = float(series.iloc[-1]) if len(series) else float("nan")
@@ -508,7 +508,7 @@ def verify_event_chain(
         used = float(trade["entry_score"])
         if not _scores_close(recomputed, used):
             failures.append(
-                f"{ticker} {entry_ts.date()} 進場分數 回測={used:.4f} 截斷重算={recomputed:.4f}"
+                f"{ticker} {entry_ts.date()} entry score backtest={used:.4f} truncated recompute={recomputed:.4f}"
             )
 
         exit_ts = trade["exit_ts"]
@@ -533,8 +533,8 @@ def verify_event_chain(
             or not _scores_close(replay["exit_price"], trade["exit_price"], atol=1e-6)
         ):
             failures.append(
-                f"{ticker} 出場重放不一致：回測 {trade['exit_date']} {trade['exit_reason']}，"
-                f"重放 {replay['exit_date']} {replay['exit_reason']}"
+                f"{ticker} exit replay mismatch: backtest {trade['exit_date']} {trade['exit_reason']}, "
+                f"replay {replay['exit_date']} {replay['exit_reason']}"
             )
 
         earlier = price.index[(price.index > entry_ts) & (price.index < exit_ts)]
@@ -554,7 +554,7 @@ def verify_event_chain(
                 )
                 if blocked["exit_reason"] != "still_holding":
                     failures.append(
-                        f"{ticker} 只給到進場日就出現出場 {blocked['exit_reason']}"
+                        f"{ticker} exited with {blocked['exit_reason']} when the series ended on the entry date"
                     )
             continue
         prev = earlier[-1]
@@ -572,11 +572,11 @@ def verify_event_chain(
         )
         if early["exit_date"] == trade["exit_date"]:
             failures.append(
-                f"{ticker} 少給一天仍在 {trade['exit_date']} 以 {early['exit_reason']} 出場"
+                f"{ticker} still exited on {trade['exit_date']} via {early['exit_reason']} when one day was removed"
             )
         if trade["exit_reason"] != "still_holding" and early["exit_reason"] != "still_holding":
             failures.append(
-                f"{ticker} 出場日前一天已經觸發 {early['exit_reason']}，但回測留到 {trade['exit_date']}"
+                f"{ticker} already triggered {early['exit_reason']} the day before the exit, but the backtest waited until {trade['exit_date']}"
             )
 
     sample_days = _spread_dates(sorted(top_by_day), max_entry_dates)
@@ -589,13 +589,13 @@ def verify_event_chain(
         for ticker in score.columns:
             recomputed_row[ticker] = _truncated_score(ticker, day)
         fresh = pd.Series(recomputed_row, dtype=float)
-        # 只保留回測當天有排名的股票，避免暖機不足的名字在截斷後突然變合格
+        # Keep only names that had a rank that day, so a short-history name does not suddenly qualify after truncation.
         eligible = fresh.where(ranks.loc[day].notna())
         fresh_top = _top_names(eligible, n_buy)
         used_top = top_by_day.get(day, [])
         if fresh_top != used_top:
             failures.append(
-                f"{day.date()} 前 {n_buy} 名不一致：回測 {used_top}，截斷重算 {fresh_top}"
+                f"{day.date()} top {n_buy} mismatch: backtest {used_top}, truncated recompute {fresh_top}"
             )
 
     for day in decay_days:
@@ -615,24 +615,24 @@ def verify_event_chain(
             new_rank = float(fresh_rank.get(ticker, np.nan))
             if not _scores_close(used_rank, new_rank, atol=0.0):
                 failures.append(
-                    f"{ticker} {day.date()} 衰退出場名次 回測={used_rank} 截斷重算={new_rank}"
+                    f"{ticker} {day.date()} decay-exit rank backtest={used_rank} truncated recompute={new_rank}"
                 )
 
     if failures:
-        _log.warning("交易鏈前視偏差檢查失敗，共 %s 筆", len(failures))
+        _log.warning("Trade-chain lookahead check failed, %s mismatches", len(failures))
         for item in failures[:12]:
             _log.warning("  %s", item)
         return False
 
     _log.info(
-        "交易鏈前視偏差檢查通過：%s 筆交易的進場分數與出場重放一致",
+        "Trade-chain lookahead check passed: entry scores and exit replays match for %s trades",
         len(trades),
     )
     return True
 
 
 def _scores_close(left: float, right: float, atol: float = _SCORE_ATOL) -> bool:
-    """兩個分數是否相同。兩邊都是 NaN 視為相同。"""
+    """Whether two scores match. NaN on both sides counts as a match."""
     if not math.isfinite(left) and not math.isfinite(right):
         return True
     if not math.isfinite(left) or not math.isfinite(right):
@@ -641,7 +641,7 @@ def _scores_close(left: float, right: float, atol: float = _SCORE_ATOL) -> bool:
 
 
 def _spread_dates(days: list[pd.Timestamp], limit: int) -> list[pd.Timestamp]:
-    """從已排序的日期裡均勻抽幾天。天數不足就全部保留。"""
+    """Sample dates evenly from a sorted list. Keep all of them when there are fewer than the limit."""
     if limit < 1 or not days:
         return []
     if len(days) <= limit:
@@ -651,7 +651,7 @@ def _spread_dates(days: list[pd.Timestamp], limit: int) -> list[pd.Timestamp]:
 
 
 def _yahoo_symbol(ticker: str) -> str:
-    """S&P 歷史檔用 BRK.B，Yahoo 報價要用 BRK-B。"""
+    """The S&P history file uses BRK.B. Yahoo quotes need BRK-B."""
     return str(ticker).upper().strip().replace(".", "-")
 
 
@@ -661,18 +661,18 @@ def _in_index_mask(
     columns: list[str],
 ) -> pd.DataFrame:
     """
-    每個交易日是否屬於該日以前最近一次季度成分股。
+    Whether each trading day belongs to the latest quarterly constituent list on or before that day.
 
-    季度取樣日當天起、下一個取樣日之前，沿用這一份名單。
-    不在名單裡的欄位整天都是 False，不能因為後來進指數就回溯。
+    From a sample date until the next sample date, that list stays in force.
+    A column that is not on the list is False for the whole day. Later index entry is not applied backward.
 
-    參數:
-        universe: get_point_in_time_sp500 的結果。
-        index: 交易日。
-        columns: 價量面板上的代號，要和成分股代號同一套寫法。
+    Args:
+        universe: Result of get_point_in_time_sp500.
+        index: Trading days.
+        columns: Tickers on the price panel. They must use the same symbols as the constituent list.
 
-    回傳:
-        與 index、columns 對齊的布林表。
+    Returns:
+        A boolean frame aligned to index and columns.
     """
     mask = pd.DataFrame(False, index=index, columns=columns)
     if not universe or len(index) == 0:
@@ -698,20 +698,20 @@ def _eligible_mask(
     membership: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
-    當天可以進候選的分數。不合格的位置是 NaN，不參與排名。
+    Scores eligible to be candidates that day. Ineligible cells are NaN and are not ranked.
 
-    沿用原本的門檻：要有收盤價、技術面分數，而且已滿最短歷史。
-    若給了時點成分股，還必須當天就在那一份名單裡。
-    這張表只決定能不能買，不把已經持有的部位提前平掉。
+    The original gates still apply: a close, a technical score, and enough history.
+    If a point-in-time membership frame is given, the name must be on that day's list.
+    This frame only decides who can be bought. It does not force an exit of a name already held.
 
-    參數:
-        score: 技術面分數。
-        ready: 是否已滿最短歷史。
-        close: 收盤價。
-        membership: 時點成分股。None 代表沿用呼叫端給的固定名單。
+    Args:
+        score: Technical scores.
+        ready: Whether the minimum history is met.
+        close: Closes.
+        membership: Point-in-time constituents. None keeps the caller's fixed list.
 
-    回傳:
-        與 score 同形的分數表，不合格為 NaN。
+    Returns:
+        A score frame with the same shape. Ineligible cells are NaN.
     """
     allowed = ready.astype(bool) & score.notna() & close.notna()
     if membership is not None:
@@ -734,66 +734,66 @@ def run_event_driven_backtest(
     as_of_universe: dict[date, set[str]] | None = None,
 ) -> dict[str, Any]:
     """
-    對一份母體跑事件驅動回測：有空位才買，觸發條件才賣。
+    Run an event-driven backtest on one universe: buy only when a slot is open, sell only when a rule hits.
 
-    每個交易日收盤，用當天技術面分數在合格股票裡取前 n_buy 名。
-    還沒持有、而且還有空位的才買進。同時最多持有 max_positions 檔。
-    新倉金額是當時淨值的 1/max_positions，現金不夠就用剩下的現金，
-    不借錢，也不把已經持有的部位再平衡。
+    At each close, take the top n_buy eligible names by that day's technical score.
+    Buy a name that is not already held, and only while a slot is open. At most max_positions names are held.
+    A new position is 1/max_positions of equity. If cash is short, use the cash that is left.
+    There is no borrowing, and existing positions are not rebalanced.
 
-    出場呼叫 simulate_position_exit。交易依進場日屬於順風或逆風歸類，
-    不依持有期間橫跨的環境切段。
+    Exits call simulate_position_exit. A trade is classified by whether its entry day is tailwind or headwind.
+    The hold is not split if it later crosses into the other regime.
 
-    若傳入 as_of_universe，候選名單改成該日以前最近一季的 S&P 500 成分股。
-    排名也只在這份當時名單裡計算，不會用到尚未進指數、或已經剔除的公司。
-    已經持有、後來被剔出指數的部位不強制賣掉，仍等停利、停損或訊號衰退。
-    被剔除之後名次是空的，訊號衰退不會再累積，停利和停損照舊。
+    If as_of_universe is passed, the candidate list is the latest quarterly S&P 500 constituents on or before that day.
+    Ranks are computed only inside that day's list. Names not yet in the index, or already removed, are not used.
+    A name already held that later leaves the index is not forced out. It still waits for take-profit, stop-loss, or signal decay.
+    After removal its rank is empty, so signal decay stops accumulating. Take-profit and stop-loss still apply.
 
-    參數:
-        tickers: 固定候選代號。有 as_of_universe 時可省略，改以下載聯集。
-        years: 舊版「從今天往回幾年」。None 時用 config.BACKTEST_START ~ BACKTEST_END；
-            有傳入、且沒有另外指定 start 時，才改成隨執行日變動的區間。
-        max_positions: 同時最多持有幾檔。
-        take_profit_pct: 停利門檻。
-        stop_loss_pct: 停損門檻，負數。
-        score_decay_days: 名次連續落後幾天出場。
-        score_decay_rank: 前幾名仍算訊號有效。時點池約 500 檔時，前 15 名比 34 檔嚴格很多。
-        n_buy: 當天分數進前幾名才考慮買進。
-        start: 績效起日（含）。None 且沒有傳 years 時用 config.BACKTEST_START。
-        end: 績效迄日（含）。None 且沒有傳 years 時用 config.BACKTEST_END。
-        as_of_universe: 季度時點成分股。None 則整段都用 tickers。
+    Args:
+        tickers: Fixed candidate symbols. Optional when as_of_universe is set; the download set is the union instead.
+        years: Legacy "how many years back from today". None uses config.BACKTEST_START through BACKTEST_END.
+            A value is used, and the window then moves with the run date, only when start is not also set.
+        max_positions: Maximum names held at once.
+        take_profit_pct: Take-profit threshold.
+        stop_loss_pct: Stop-loss threshold. Negative.
+        score_decay_days: Consecutive weak-rank days required to exit.
+        score_decay_rank: Ranks inside this top-N still count as a live signal. In a ~500-name point-in-time pool, top 15 is much stricter than in 34 names.
+        n_buy: A name is considered for a buy only if its score is inside this top-N.
+        start: First performance date, inclusive. None, and years not passed, uses config.BACKTEST_START.
+        end: Last performance date, inclusive. None, and years not passed, uses config.BACKTEST_END.
+        as_of_universe: Quarterly point-in-time constituents. None uses tickers for the whole window.
 
-    回傳:
-        扣成本後的日報酬、累積報酬、Sharpe、交易清單、持有天數、
-        出場原因、年化單邊成交次數，以及依進場日拆開的順風／逆風績效。
+    Returns:
+        Daily returns after costs, cumulative return, Sharpe, the trade list, holding days,
+        exit reasons, annualized one-way fills, and tailwind/headwind performance split by entry day.
     """
     if max_positions < 1 or n_buy < 1:
-        raise ValueError("max_positions 與 n_buy 都必須至少為 1")
+        raise ValueError("max_positions and n_buy must both be at least 1")
 
-    # 明確傳入 years 且沒指定 start，才用「今天往回 N 年」。其餘走固定區間。
+    # "Years back from today" is used only when years is passed and start is not. Otherwise the window is fixed.
     if years is not None and start is None:
         if years < 1:
-            raise ValueError(f"years 必須至少 1 年，收到 {years}")
+            raise ValueError(f"years must be at least 1, got {years}")
         end_day = end or date.today()
         eval_start = end_day - timedelta(days=365 * years)
     else:
         end_day = end if end is not None else BACKTEST_END
         eval_start = start if start is not None else BACKTEST_START
     if eval_start > end_day:
-        raise ValueError(f"回測起日 {eval_start} 晚於迄日 {end_day}")
+        raise ValueError(f"Backtest start {eval_start} is after end {end_day}")
     fetch_start = eval_start - timedelta(days=_WARMUP_DAYS)
     if as_of_universe is not None:
         symbols = sorted({str(ticker).upper().strip() for names in as_of_universe.values() for ticker in names})
     else:
         if not tickers:
-            raise ValueError("沒有固定名單，也沒有時點股票池，無法回測")
+            raise ValueError("No fixed list and no point-in-time universe, so the backtest cannot run")
         symbols = [str(ticker).upper().strip() for ticker in tickers if str(ticker).strip()]
     yahoo_symbols = sorted({_yahoo_symbol(ticker) for ticker in symbols})
 
     panel = build_ohlcv_panel([*yahoo_symbols, _BENCHMARK], fetch_start, end_day)
     spy = panel.get(_BENCHMARK)
     if spy is None or spy.empty:
-        raise RuntimeError("沒有 SPY 價量，無法劃分順風與逆風")
+        raise RuntimeError("No SPY prices, so tailwind and headwind cannot be split")
 
     master = _as_timestamp_index(spy.index)
     master = master[(master >= pd.Timestamp(fetch_start)) & (master <= pd.Timestamp(end_day))]
@@ -805,16 +805,16 @@ def run_event_driven_backtest(
         frames[ticker] = _prepare_history(raw)
     dropped = sorted(set(symbols) - set(frames))
     if dropped:
-        _log.warning("這些代號沒有價量，已從事件驅動回測剔除: %s", ",".join(dropped))
+        _log.warning("These symbols have no prices and were dropped from the event-driven backtest: %s", ",".join(dropped))
     if not frames:
-        raise RuntimeError("沒有任何可用價量，無法回測")
+        raise RuntimeError("No usable prices, so the backtest cannot run")
 
     close, score, ready = _score_frame(frames, master)
     membership = None
     if as_of_universe is not None:
         membership = _in_index_mask(as_of_universe, close.index, list(close.columns))
         _log.info(
-            "時點成分股：%s 個季度快照，價量齊全 %s / %s 檔",
+            "Point-in-time constituents: %s quarterly snapshots, prices available for %s / %s names",
             len(as_of_universe),
             len(frames),
             len(symbols),
@@ -830,7 +830,7 @@ def run_event_driven_backtest(
 
     trade_days = master[(master >= pd.Timestamp(eval_start)) & (master <= pd.Timestamp(end_day))]
     if len(trade_days) < 2:
-        raise RuntimeError(f"{eval_start} ~ {end_day} 之間沒有足夠交易日")
+        raise RuntimeError(f"Not enough trading days between {eval_start} and {end_day}")
 
     cash = 1.0
     positions: dict[str, dict[str, Any]] = {}
@@ -862,7 +862,7 @@ def run_event_driven_backtest(
             exit_ts = _as_stamp(result["exit_date"])
             if exit_ts != day:
                 _log.warning(
-                    "%s 應在 %s 出場，模擬日卻是 %s，改以觸發日的結果平倉",
+                    "%s should have exited on %s, but the simulation day is %s; closing with the trigger-day result",
                     ticker,
                     result["exit_date"],
                     day.date(),
@@ -902,7 +902,7 @@ def run_event_driven_backtest(
                         "shares": each * (1.0 - _ONE_WAY_COST) / float(px),
                         "allocated": each,
                         "last_price": float(px),
-                        "regime": "逆風段" if day in headwind else "順風段",
+                        "regime": "Headwind" if day in headwind else "Tailwind",
                     }
                     cash -= each
                     if ticker in exited_today:
@@ -927,7 +927,7 @@ def run_event_driven_backtest(
             score_decay_rank=score_decay_rank,
             rank_series=ranks[ticker].loc[:last_day],
         )
-        # 模擬結束仍未觸發，覆寫成仍持有，避免最後一天剛好達標時被算兩次
+        # Still open when the simulation ends. Record it as still holding so a last-day hit is not counted twice.
         if result["exit_reason"] == "still_holding":
             trades.append(_closed_trade(pos, result, last_day))
 
@@ -941,7 +941,7 @@ def run_event_driven_backtest(
         name: _regime_stats(trades, close.loc[daily.index[0] : daily.index[-1]], spy_ret, name)
         if len(daily)
         else _regime_stats(trades, close, spy_ret, name)
-        for name in ("順風段", "逆風段")
+        for name in ("Tailwind", "Headwind")
     }
     holds = [int(trade["holding_days"]) for trade in trades]
     reasons: dict[str, int] = {key: 0 for key in _EXIT_LABELS}
@@ -1010,7 +1010,7 @@ def run_event_driven_backtest(
         "n_with_prices": len(frames),
     }
     _log.info(
-        "事件驅動回測 %s ~ %s：扣成本後 %.2f%%，Sharpe %.2f，交易 %s 筆",
+        "Event-driven backtest %s ~ %s: %.2f%% after costs, Sharpe %.2f, %s trades",
         result["start"],
         result["end"],
         result["cumulative_return_net"] * 100,
@@ -1025,7 +1025,7 @@ def _closed_trade(
     result: dict[str, Any],
     fallback_day: pd.Timestamp,
 ) -> dict[str, Any]:
-    """把持倉和出場結果收成一筆交易紀錄。"""
+    """Turn a position and an exit result into one trade record."""
     exit_date = result["exit_date"]
     exit_ts = _as_stamp(exit_date) if exit_date is not None else fallback_day
     return {
@@ -1047,7 +1047,7 @@ def _closed_trade(
 
 
 def _assert_exit_rules() -> None:
-    """用人造價格確認三個出場條件與截斷重放，不碰行情資料。"""
+    """Check the three exit rules and the truncated replay on synthetic prices, without market data."""
     index = pd.bdate_range("2024-01-01", periods=12)
     flat = pd.Series(100.0, index=index)
     scores = pd.Series(80.0, index=index)
@@ -1057,25 +1057,25 @@ def _assert_exit_rules() -> None:
     surged.iloc[3] = 130.0
     took = simulate_position_exit(index[0], 100.0, 80.0, surged, scores, rank_series=ranks)
     if took["exit_reason"] != "take_profit" or took["exit_date"] != index[3].date():
-        raise AssertionError(f"停利判斷錯誤: {took}")
+        raise AssertionError(f"Take-profit decision was wrong: {took}")
 
     cut = flat.copy()
     cut.iloc[2] = 88.0
     stopped = simulate_position_exit(index[0], 100.0, 80.0, cut, scores, rank_series=ranks)
     if stopped["exit_reason"] != "stop_loss" or stopped["exit_date"] != index[2].date():
-        raise AssertionError(f"停損判斷錯誤: {stopped}")
+        raise AssertionError(f"Stop-loss decision was wrong: {stopped}")
 
     weak = ranks.copy()
     weak.iloc[1:6] = 20.0
     decayed = simulate_position_exit(index[0], 100.0, 80.0, flat, scores, rank_series=weak)
     if decayed["exit_reason"] != "signal_decay" or decayed["exit_date"] != index[5].date():
-        raise AssertionError(f"訊號衰退判斷錯誤: {decayed}")
+        raise AssertionError(f"Signal-decay decision was wrong: {decayed}")
 
     reset = weak.copy()
     reset.iloc[4] = 5.0
     held = simulate_position_exit(index[0], 100.0, 80.0, flat, scores, rank_series=reset)
     if held["exit_reason"] == "signal_decay":
-        raise AssertionError(f"名次回到前段仍被判定衰退: {held}")
+        raise AssertionError(f"Rank recovered into the top group but was still treated as decay: {held}")
 
     early = simulate_position_exit(
         index[0],
@@ -1086,35 +1086,35 @@ def _assert_exit_rules() -> None:
         rank_series=ranks.loc[: index[2]],
     )
     if early["exit_reason"] != "still_holding":
-        raise AssertionError(f"尚未碰到停利價就被提前出場: {early}")
-    _log.info("出場規則自我檢查通過")
+        raise AssertionError(f"Exited before the take-profit price was reached: {early}")
+    _log.info("Exit-rule self-check passed")
 
 
 def _pct(value: float) -> str:
-    """把比率格式化成百分比。"""
+    """Format a ratio as a percent."""
     if value is None or not math.isfinite(value):
         return "—"
     return f"{value * 100:.1f}%"
 
 
 def _num(value: float) -> str:
-    """把 Sharpe 格式化成兩位小數。"""
+    """Format a Sharpe ratio to two decimals."""
     if value is None or not math.isfinite(value):
         return "—"
     return f"{value:.2f}"
 
 
 def _pp(value: float) -> str:
-    """把超額格式化成百分點。"""
+    """Format excess return in percentage points."""
     if value is None or not math.isfinite(value):
         return "—"
     return f"{value * 100:.1f}pp"
 
 
 def _reason_text(reasons: dict[str, int], total: int) -> str:
-    """出場原因的數量與占比。"""
+    """Counts and shares of exit reasons."""
     if total <= 0:
-        return "沒有交易"
+        return "no trades"
     parts = []
     for key in ("take_profit", "stop_loss", "signal_decay", "still_holding"):
         count = int(reasons.get(key, 0))
@@ -1123,7 +1123,7 @@ def _reason_text(reasons: dict[str, int], total: int) -> str:
 
 
 def _segment(regime: dict[str, Any], name: str) -> dict[str, Any]:
-    """從月度 regime 結果取出順風或逆風那一列。"""
+    """Pull the tailwind or headwind row from a monthly regime result."""
     for row in regime["segments"]:
         if row["name"] == name:
             return row
@@ -1132,46 +1132,46 @@ def _segment(regime: dict[str, Any], name: str) -> dict[str, Any]:
 
 def _verdict(monthly_head: dict[str, Any], event_head: dict[str, Any], event: dict[str, Any]) -> str:
     """
-    比較事件驅動與月度固定的逆風段 Sharpe。
+    Compare headwind Sharpe for the event-driven run and the fixed monthly run.
 
-    參數:
-        monthly_head: 月度固定的逆風段。
-        event_head: 事件驅動、進場日落在逆風段的彙總。
-        event: 事件驅動全期結果，用來同時報告總報酬，避免只講變好的部分。
+    Args:
+        monthly_head: The monthly run's headwind segment. The stored name is Headwind.
+        event_head: Event-driven trades whose entry day falls in Headwind.
+        event: Full event-driven result, so the conclusion also reports total return.
 
-    回傳:
-        一段結論。
+    Returns:
+        One conclusion paragraph.
     """
     base = float(monthly_head["sharpe"])
     new = float(event_head["sharpe"])
     total = _pct(float(event["cumulative_return_net"]))
-    tail = event["regime"]["順風段"]
+    tail = event["regime"]["Tailwind"]
     shared = (
-        f"事件驅動全期扣成本後報酬 {total}，Sharpe {_num(float(event['sharpe']))}。"
-        f"順風段報酬 {_pct(float(tail['strategy_return']))}，Sharpe {_num(float(tail['sharpe']))}。"
-        f"逆風段報酬 {_pct(float(event_head['strategy_return']))}，"
-        f"同期 SPY {_pct(float(event_head['spy_return']))}，"
-        f"超額 {_pp(float(event_head['excess']))}，Sharpe {_num(new)}。"
+        f"Event-driven return after costs is {total}, Sharpe {_num(float(event['sharpe']))}. "
+        f"Tailwind return {_pct(float(tail['strategy_return']))}, Sharpe {_num(float(tail['sharpe']))}. "
+        f"Headwind return {_pct(float(event_head['strategy_return']))}, "
+        f"SPY over the same days {_pct(float(event_head['spy_return']))}, "
+        f"excess {_pp(float(event_head['excess']))}, Sharpe {_num(new)}. "
     )
     if not math.isfinite(new):
-        return shared + "逆風段有效交易日不足，Sharpe 無法和 0.18 比較。"
+        return shared + "The headwind segment does not have enough invested days, so Sharpe cannot be compared with 0.18."
     gap = new - base
     if gap >= _SHARPE_IMPROVEMENT:
         return (
             shared
-            + f"逆風段 Sharpe 比月度固定的 {_num(base)} 高出 {gap:.2f}，"
-            "停利、停損、訊號衰退這套出場規則確實改善了逆風段的問題。"
+            + f"Headwind Sharpe is {gap:.2f} above the monthly run's {_num(base)}. "
+            "Take-profit, stop-loss, and signal decay did improve the headwind result."
         )
     if gap > 0:
         return (
             shared
-            + f"逆風段 Sharpe 從 {_num(base)} 升到 {_num(new)}，有提高，"
-            f"但差距 {gap:.2f} 小於 {_SHARPE_IMPROVEMENT:.2f}，還不能說已經治好逆風段。"
+            + f"Headwind Sharpe rose from {_num(base)} to {_num(new)}, "
+            f"but the gap {gap:.2f} is below {_SHARPE_IMPROVEMENT:.2f}, so this does not yet fix the headwind result."
         )
     return (
         shared
-        + f"逆風段 Sharpe {_num(new)} 並沒有高於月度固定的 {_num(base)}。"
-        "停利、停損、訊號衰退沒有改善逆風段，這組數字要照實保留。"
+        + f"Headwind Sharpe {_num(new)} is not above the monthly run's {_num(base)}. "
+        "Take-profit, stop-loss, and signal decay did not improve the headwind segment. Keep that number as it is."
     )
 
 
@@ -1180,24 +1180,24 @@ def _print_report(
     monthly_regime: dict[str, Any],
     event: dict[str, Any],
 ) -> None:
-    """印出月度固定與事件驅動的對照、區段表與年化成交次數。"""
-    monthly_tail = _segment(monthly_regime, "順風段")
-    monthly_head = _segment(monthly_regime, "逆風段")
-    event_head = event["regime"]["逆風段"]
+    """Print the monthly-versus-event comparison, the regime table, and annualized fills."""
+    monthly_tail = _segment(monthly_regime, "Tailwind")
+    monthly_head = _segment(monthly_regime, "Headwind")
+    event_head = event["regime"]["Headwind"]
     holds = (
-        f"{event['avg_holding_days']:.1f} 天"
-        f"（最短 {event['holding_min']} / 中位數 {event['holding_median']:.0f} / 最長 {event['holding_max']}）"
+        f"{event['avg_holding_days']:.1f} days"
+        f" (min {event['holding_min']} / median {event['holding_median']:.0f} / max {event['holding_max']})"
     )
-    print("\n=== 月度固定 vs 事件驅動（組 A，扣成本後）===", flush=True)
-    print("設定 | 平均持有天數 | 出場原因分布 | 總報酬(扣成本) | Sharpe", flush=True)
+    print("\n=== Fixed monthly vs event-driven (Group A, after costs) ===", flush=True)
+    print("Rule | Average hold | Exit reasons | Total return (after costs) | Sharpe", flush=True)
     print(
-        "月度固定 | 30 天（固定） | N/A | "
+        "Fixed monthly | 30 days (fixed) | N/A | "
         f"{_pct(float(monthly['cumulative_return_net']))} | "
         f"{_num(float(monthly['sharpe_net']))}",
         flush=True,
     )
     print(
-        "事件驅動 | "
+        "Event-driven | "
         f"{holds} | "
         f"{_reason_text(event['exit_reasons'], event['n_entries'])} | "
         f"{_pct(float(event['cumulative_return_net']))} | "
@@ -1205,55 +1205,55 @@ def _print_report(
         flush=True,
     )
     print(
-        f"持有天數分布：最短 {event['holding_min']} 天，"
-        f"中位數 {event['holding_median']:.0f} 天，"
-        f"最長 {event['holding_max']} 天。"
-        f"仍持有 {event['n_still_holding']} 筆，天數算到資料最後一天。",
+        f"Holding days: min {event['holding_min']}, "
+        f"median {event['holding_median']:.0f}, "
+        f"max {event['holding_max']}. "
+        f"{event['n_still_holding']} positions are still open; their days run through the last date in the data.",
         flush=True,
     )
     if event["holding_min"] != event["holding_max"]:
-        print("最短和最長不同，持有期已不再固定在一個月。", flush=True)
+        print("Min and max differ, so the hold is no longer fixed at one month.", flush=True)
     else:
-        print("最短和最長相同，這次持有期仍然沒有散開。", flush=True)
+        print("Min and max are the same, so holds did not spread out in this run.", flush=True)
     gross_sharpe = float(monthly["sharpe"])
     print(
-        f"月度固定這一列的 Sharpe 是扣成本後 {_num(float(monthly['sharpe_net']))}。"
-        f"先前總表印出的 {_num(gross_sharpe)} 是未扣成本 Sharpe。",
+        f"The monthly row's Sharpe is {_num(float(monthly['sharpe_net']))} after costs. "
+        f"The earlier summary printed {_num(gross_sharpe)}, which is Sharpe before costs.",
         flush=True,
     )
 
-    print("\n=== 進場日環境對照 ===", flush=True)
+    print("\n=== Entry-day regime ===", flush=True)
     print(
-        "月度固定沿用原本的切法：交易日本身落在 SPY 回調區間才算逆風。"
-        "事件驅動改以進場日歸類整筆交易，持有期若跨到另一個環境，仍算在進場那天的環境。",
+        "The monthly run keeps its original split: a day is headwind only if that day itself sits in a SPY drawdown. "
+        "The event-driven run classifies the whole trade by its entry day. If the hold later crosses regimes, it stays with the entry day's regime.",
         flush=True,
     )
-    print("              | 月度固定版 | 事件驅動版", flush=True)
+    print("              | Fixed monthly | Event-driven", flush=True)
     print(
-        f"順風段 Sharpe | {_num(float(monthly_tail['sharpe']))} | "
-        f"{_num(float(event['regime']['順風段']['sharpe']))}",
+        f"Tailwind Sharpe | {_num(float(monthly_tail['sharpe']))} | "
+        f"{_num(float(event['regime']['Tailwind']['sharpe']))}",
         flush=True,
     )
     print(
-        f"逆風段 Sharpe | {_num(float(monthly_head['sharpe']))} | "
+        f"Headwind Sharpe | {_num(float(monthly_head['sharpe']))} | "
         f"{_num(float(event_head['sharpe']))}",
         flush=True,
     )
     print(
-        f"逆風段報酬    | {_pct(float(monthly_head['strategy_return']))} | "
+        f"Headwind return | {_pct(float(monthly_head['strategy_return']))} | "
         f"{_pct(float(event_head['strategy_return']))}",
         flush=True,
     )
     print(
-        f"逆風段 vs SPY | {_pp(float(monthly_head['excess']))} | "
+        f"Headwind vs SPY | {_pp(float(monthly_head['excess']))} | "
         f"{_pp(float(event_head['excess']))}",
         flush=True,
     )
     print(
-        f"事件驅動逆風段 {event_head['n_trades']} 筆進場、"
-        f"{event_head['n_days']} 個有部位的交易日；"
-        f"順風段 {event['regime']['順風段']['n_trades']} 筆、"
-        f"{event['regime']['順風段']['n_days']} 個交易日。",
+        f"Event-driven headwind: {event_head['n_trades']} entries, "
+        f"{event_head['n_days']} invested days; "
+        f"tailwind: {event['regime']['Tailwind']['n_trades']} entries, "
+        f"{event['regime']['Tailwind']['n_days']} days.",
         flush=True,
     )
     print(_verdict(monthly_head, event_head, event), flush=True)
@@ -1266,44 +1266,44 @@ def _print_report(
         1 / 365.25,
     )
     monthly_sides = float(monthly["n_name_changes"]) / monthly_years
-    print("\n=== 年化單邊成交次數 ===", flush=True)
+    print("\n=== Annualized one-way fills ===", flush=True)
     print(
-        "可比指標是一年內買進與賣出的次數合計。月度固定用換股次數，"
-        "事件驅動用進場次數加出場次數。仍持有的部位還沒有賣出，不計入出場。",
+        "The comparable figure is buys plus sells per year. The monthly run uses rebalance count. "
+        "The event-driven run uses entries plus exits. Positions still open have not been sold, so they are not exits.",
         flush=True,
     )
     print(
-        f"月度固定：{monthly_sides:.1f} 次/年"
-        f"（換股 {int(monthly['n_name_changes'])} 次，區間 {monthly_years:.2f} 年）",
+        f"Fixed monthly: {monthly_sides:.1f} fills/year "
+        f"({int(monthly['n_name_changes'])} name changes, window {monthly_years:.2f} years)",
         flush=True,
     )
     print(
-        f"事件驅動：{float(event['annualized_sides']):.1f} 次/年"
-        f"（進場 {event['n_entries']}、出場 {event['n_exits']}、"
-        f"仍持有 {event['n_still_holding']}，區間 {float(event['span_years']):.2f} 年）",
+        f"Event-driven: {float(event['annualized_sides']):.1f} fills/year "
+        f"(entries {event['n_entries']}, exits {event['n_exits']}, "
+        f"still holding {event['n_still_holding']}, window {float(event['span_years']):.2f} years)",
         flush=True,
     )
     if event["n_same_day_reentries"]:
         print(
-            f"同一天賣出後又買回 {event['n_same_day_reentries']} 次，這些來回都付了單邊成本。",
+            f"Sold and bought back the same day {event['n_same_day_reentries']} times. Each round trip paid the one-way cost.",
             flush=True,
         )
     if float(event["annualized_sides"]) < monthly_sides:
         print(
-            f"事件驅動一年約 {float(event['annualized_sides']):.0f} 次單邊成交，"
-            f"少於月度固定的 {monthly_sides:.0f} 次。",
+            f"The event-driven run is about {float(event['annualized_sides']):.0f} one-way fills a year, "
+            f"fewer than the monthly run's {monthly_sides:.0f}.",
             flush=True,
         )
     else:
         print(
-            f"事件驅動一年約 {float(event['annualized_sides']):.0f} 次單邊成交，"
-            f"不少於月度固定的 {monthly_sides:.0f} 次，執行次數並沒有降下來。",
+            f"The event-driven run is about {float(event['annualized_sides']):.0f} one-way fills a year, "
+            f"not below the monthly run's {monthly_sides:.0f}, so activity did not fall.",
             flush=True,
         )
 
 
 def _same_exit_params(result: dict[str, Any], case: dict[str, Any]) -> bool:
-    """已跑完的回測是否就是這一組出場參數。"""
+    """Whether a finished backtest used this exact set of exit parameters."""
     return (
         abs(float(result["take_profit_pct"]) - float(case["take_profit_pct"])) < 1e-12
         and abs(float(result["stop_loss_pct"]) - float(case["stop_loss_pct"])) < 1e-12
@@ -1314,17 +1314,17 @@ def _same_exit_params(result: dict[str, Any], case: dict[str, Any]) -> bool:
 
 def _sensitivity_row(case: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     """
-    從一次完整回測抽出敏感度表需要的欄位。
+    Pull the columns the sensitivity table needs from one full backtest.
 
-    參數:
-        case: 參數組合，含 label 與四個出場參數。
-        result: run_event_driven_backtest 的回傳，已含進場日 regime split。
+    Args:
+        case: Parameter set, including label and the four exit parameters.
+        result: Return value of run_event_driven_backtest, already split by entry-day regime.
 
-    回傳:
-        年化單邊成交、順風／逆風 Sharpe、逆風報酬與扣成本總報酬。
+    Returns:
+        Annualized one-way fills, tailwind and headwind Sharpe, headwind return, and total return after costs.
     """
-    tail = result["regime"]["順風段"]
-    head = result["regime"]["逆風段"]
+    tail = result["regime"]["Tailwind"]
+    head = result["regime"]["Headwind"]
     stops = [
         float(trade["return_pct"])
         for trade in result["trades"]
@@ -1352,29 +1352,29 @@ def run_parameter_sensitivity(
     baseline: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    對五組出場參數各跑一次事件驅動回測，含進場日的順風／逆風拆分。
+    Run the event-driven backtest once for each of five exit-parameter sets, split by entry-day regime.
 
-    基準是停利 25%、停損 -10%、連續 5 天跌出前 15 名。
-    A 只把衰退天數改成 10。B 只把停損改成 -15%。
-    C 只把停利改成 15%。D 同時用衰退 10 天與停損 -15%。
-    進場規則、持倉上限與交易成本都不改。
+    Baseline is take-profit 25%, stop -10%, and five days outside the top 15.
+    A changes only the decay window to 10 days. B changes only the stop to -15%.
+    C changes only take-profit to 15%. D uses 10-day decay and a -15% stop together.
+    Entry rules, the position cap, and trading costs stay the same.
 
-    參數:
-        tickers: 候選代號，通常是組 A。
-        years: 舊版「從今天往回幾年」。None 時沿用 config 的固定區間；有傳入才覆寫。
-        baseline: 已經跑完、且參數與基準相同的回測。有傳入就不再重跑基準。
+    Args:
+        tickers: Candidate symbols, usually Group A.
+        years: Legacy "years back from today". None keeps the fixed config window. A value overrides it.
+        baseline: A finished backtest whose parameters already match the baseline. When passed, the baseline is not rerun.
 
-    回傳:
-        五列敏感度結果，順序是基準、A、B、C、D。
+    Returns:
+        Five sensitivity rows, in order: baseline, A, B, C, D.
     """
     rows: list[dict[str, Any]] = []
     for case in _SENSITIVITY_CASES:
         if baseline is not None and _same_exit_params(baseline, case):
-            _log.info("敏感度 %s 沿用已完成的回測", case["label"])
+            _log.info("Sensitivity %s reuses a finished backtest", case["label"])
             result = baseline
         else:
             _log.info(
-                "敏感度 %s：停利 %.0f%%，停損 %.0f%%，衰退 %s 天，前 %s 名",
+                "Sensitivity %s: take-profit %.0f%%, stop %.0f%%, decay %s days, top %s",
                 case["label"],
                 float(case["take_profit_pct"]) * 100,
                 float(case["stop_loss_pct"]) * 100,
@@ -1391,23 +1391,23 @@ def run_parameter_sensitivity(
             )
         row = _sensitivity_row(case, result)
         if not row["lookahead_ok"]:
-            _log.warning("敏感度 %s 的交易鏈前視偏差檢查沒有通過", case["label"])
+            _log.warning("Sensitivity %s failed the trade-chain lookahead check", case["label"])
         rows.append(row)
     return rows
 
 
 def _print_sensitivity(rows: list[dict[str, Any]]) -> None:
-    """印出出場參數敏感度對照，並標出收盤價停損可以穿透設定值。"""
-    print("\n=== 出場參數敏感度（組 A，扣成本後）===", flush=True)
+    """Print the exit-parameter sensitivity table, and note that a close-only stop can gap through its setting."""
+    print("\n=== Exit-parameter sensitivity (Group A, after costs) ===", flush=True)
     for row in rows:
         print(f"{row['label']}：{row['note']}", flush=True)
     print(
-        "設定 | 年化單邊成交 | 順風 Sharpe | 逆風 Sharpe | 逆風報酬 | 總報酬(扣成本)",
+        "Setting | Annualized one-way fills | Tailwind Sharpe | Headwind Sharpe | Headwind return | Total return (after costs)",
         flush=True,
     )
     for row in rows:
         if not row["lookahead_ok"]:
-            print(f"{row['label']} | 前視偏差檢查未通過，這列不採用 | — | — | — | —", flush=True)
+            print(f"{row['label']} | lookahead check failed, row not used | — | — | — | —", flush=True)
             continue
         print(
             f"{row['label']} | {row['annualized_sides']:.1f} | "
@@ -1420,37 +1420,37 @@ def _print_sensitivity(rows: list[dict[str, Any]]) -> None:
         return
     base = verified[0]
     print(
-        "停損只看收盤價。基準組設定 "
+        "The stop uses the close only. The baseline setting is "
         f"{base['stop_loss_pct'] * 100:.0f}%，"
-        f"停損單裡最差的價格報酬是 {_pct(base['worst_stop'])}，"
-        "沒有卡在設定值。這是回測相對實盤的已知樂觀偏差，不要把停損寫成剛好落在設定值。",
+        f"The worst price return among stop exits is {_pct(base['worst_stop'])}, "
+        "which did not land on the setting. That is a known optimistic bias of the backtest versus live trading. Do not describe the stop as filling exactly at the setting.",
         flush=True,
     )
     for row in verified[1:]:
         print(
-            f"{row['label']} 年化單邊成交 {row['annualized_sides']:.1f}，"
-            f"順風 Sharpe {_num(row['tail_sharpe'])}，"
-            f"逆風 Sharpe {_num(row['head_sharpe'])}，"
-            f"總報酬 {_pct(row['total_return'])}。",
+            f"{row['label']} annualized one-way fills {row['annualized_sides']:.1f}, "
+            f"tailwind Sharpe {_num(row['tail_sharpe'])}, "
+            f"headwind Sharpe {_num(row['head_sharpe'])}, "
+            f"total return {_pct(row['total_return'])}.",
             flush=True,
         )
 
 
-# D 組（衰退 10 天、停損 -15%）周圍的局部網格。停利與名次門檻維持基準。
+# Local grid around case D (decay 10 days, stop -15%). Take-profit and the rank gate stay at the baseline.
 _GRID_DECAY_DAYS = (7, 8, 10, 12, 15)
 _GRID_STOPS = (-0.12, -0.13, -0.15, -0.17, -0.20)
 _GRID_TAKE_PROFIT = 0.25
 _GRID_DECAY_RANK = 15
 _GRID_CENTER_DAYS = 10
 _GRID_CENTER_STOP = -0.15
-# 鄰近點和中心差到這個幅度，才算「明顯不同」
+# A neighbor counts as clearly different from the center only past this gap.
 _GRID_TURNOVER_GAP = 0.15
 _GRID_SHARPE_GAP = 0.15
 _GRID_RETURN_GAP = 0.15
 
 
 def _grid_index(value: float, options: tuple[float, ...] | tuple[int, ...]) -> int:
-    """參數在網格軸上的位置。對不到就視為超出網格。"""
+    """Index of a parameter on a grid axis. A value that is not on the axis is treated as off the grid."""
     for index, item in enumerate(options):
         if abs(float(item) - float(value)) < 1e-9:
             return index
@@ -1458,7 +1458,7 @@ def _grid_index(value: float, options: tuple[float, ...] | tuple[int, ...]) -> i
 
 
 def _grid_distance(left: dict[str, Any], right: dict[str, Any]) -> int:
-    """兩個網格點的切比雪夫距離。差一格（含斜鄰）是 1。"""
+    """Chebyshev distance between two grid points. One step, including a diagonal neighbor, is 1."""
     day_gap = abs(
         _grid_index(left["score_decay_days"], _GRID_DECAY_DAYS)
         - _grid_index(right["score_decay_days"], _GRID_DECAY_DAYS)
@@ -1471,7 +1471,7 @@ def _grid_distance(left: dict[str, Any], right: dict[str, Any]) -> int:
 
 
 def _is_center(row: dict[str, Any]) -> bool:
-    """是否為 D 組中心：衰退 10 天、停損 -15%。"""
+    """Whether this cell is the D center: decay 10 days and stop -15%."""
     return (
         int(row["score_decay_days"]) == _GRID_CENTER_DAYS
         and abs(float(row["stop_loss_pct"]) - _GRID_CENTER_STOP) < 1e-9
@@ -1479,13 +1479,13 @@ def _is_center(row: dict[str, Any]) -> bool:
 
 
 def _metric_value(row: dict[str, Any], key: str) -> float:
-    """讀出一個指標。無效值當成無法參選。"""
+    """Read one metric. A non-finite value is not eligible to win."""
     value = float(row[key])
     return value if math.isfinite(value) else float("nan")
 
 
 def _best_rows(rows: list[dict[str, Any]], key: str, higher: bool) -> list[dict[str, Any]]:
-    """找出這個指標的最佳格子。並列時全部保留。"""
+    """Find the best cells for one metric. Ties are all kept."""
     usable = [row for row in rows if row["lookahead_ok"] and math.isfinite(_metric_value(row, key))]
     if not usable:
         return []
@@ -1497,23 +1497,23 @@ def _best_rows(rows: list[dict[str, Any]], key: str, higher: bool) -> list[dict[
 
 def _neighbor_gaps(center: dict[str, Any], other: dict[str, Any]) -> list[str]:
     """
-    列出鄰近點和 D 組差得明顯的指標。
+    List metrics where a neighbor differs clearly from case D.
 
-    年化成交相對差超過 15%、Sharpe 絕對差超過 0.15、
-    報酬絕對差超過 15 個百分點，才算明顯不同。
+    A relative gap above 15% in annualized fills, an absolute Sharpe gap above 0.15,
+    or an absolute return gap above 15 percentage points counts as clearly different.
     """
     gaps: list[str] = []
     base_turn = float(center["annualized_sides"])
     if base_turn > 0 and abs(float(other["annualized_sides"]) - base_turn) / base_turn > _GRID_TURNOVER_GAP:
-        gaps.append("年化成交")
+        gaps.append("annualized fills")
     if abs(float(other["tail_sharpe"]) - float(center["tail_sharpe"])) > _GRID_SHARPE_GAP:
-        gaps.append("順風 Sharpe")
+        gaps.append("tailwind Sharpe")
     if abs(float(other["head_sharpe"]) - float(center["head_sharpe"])) > _GRID_SHARPE_GAP:
-        gaps.append("逆風 Sharpe")
+        gaps.append("headwind Sharpe")
     if abs(float(other["head_return"]) - float(center["head_return"])) > _GRID_RETURN_GAP:
-        gaps.append("逆風報酬")
+        gaps.append("headwind return")
     if abs(float(other["total_return"]) - float(center["total_return"])) > _GRID_RETURN_GAP:
-        gaps.append("總報酬")
+        gaps.append("total return")
     return gaps
 
 
@@ -1523,20 +1523,20 @@ def run_local_grid_search(
     reuse: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    以 D 組為中心，對衰退天數與停損做 5×5 局部網格。
+    Run a 5 by 5 local grid of decay days and stop-loss around case D.
 
-    score_decay_days 取 7、8、10、12、15。
-    stop_loss_pct 取 -12%、-13%、-15%、-17%、-20%。
-    停利固定 25%，名次門檻固定前 15 名。
-    每一格都跑完整的事件驅動回測，含進場日順風／逆風拆分。
+    score_decay_days is 7, 8, 10, 12, 15.
+    stop_loss_pct is -12%, -13%, -15%, -17%, -20%.
+    Take-profit stays at 25% and the rank gate stays at the top 15.
+    Every cell runs the full event-driven backtest, split by entry-day regime.
 
-    參數:
-        tickers: 候選代號，通常是組 A。
-        years: 舊版「從今天往回幾年」。None 時沿用 config 的固定區間；有傳入才覆寫。
-        reuse: 已經跑完的回測。參數對得上的格子直接沿用，不再重算。
+    Args:
+        tickers: Candidate symbols, usually Group A.
+        years: Legacy "years back from today". None keeps the fixed config window. A value overrides it.
+        reuse: Finished backtests. A cell whose parameters already match is reused and not recomputed.
 
-    回傳:
-        25 格的指標列，依衰退天數、再依停損由淺到深排列。
+    Returns:
+        Twenty-five metric rows, ordered by decay days and then by stop from shallow to deep.
     """
     cached = list(reuse or [])
     rows: list[dict[str, Any]] = []
@@ -1546,8 +1546,8 @@ def run_local_grid_search(
         for stop in _GRID_STOPS:
             done += 1
             case = {
-                "label": f"衰退{days}/停損{stop * 100:.0f}%",
-                "note": "局部網格",
+                "label": f"decay {days}/stop {stop * 100:.0f}%",
+                "note": "local grid",
                 "take_profit_pct": _GRID_TAKE_PROFIT,
                 "stop_loss_pct": stop,
                 "score_decay_days": days,
@@ -1555,11 +1555,11 @@ def run_local_grid_search(
             }
             matched = next((item for item in cached if _same_exit_params(item, case)), None)
             if matched is not None:
-                _log.info("局部網格 %s/%s 沿用已完成回測：%s", done, total, case["label"])
+                _log.info("Local grid %s/%s reuses a finished backtest: %s", done, total, case["label"])
                 result = matched
             else:
                 _log.info(
-                    "局部網格 %s/%s：衰退 %s 天，停損 %.0f%%",
+                    "Local grid %s/%s: decay %s days, stop %.0f%%",
                     done,
                     total,
                     days,
@@ -1575,13 +1575,13 @@ def run_local_grid_search(
                 )
             row = _sensitivity_row(case, result)
             if not row["lookahead_ok"]:
-                _log.warning("局部網格 %s 的交易鏈前視偏差檢查沒有通過", case["label"])
+                _log.warning("Local grid %s failed the trade-chain lookahead check", case["label"])
             rows.append(row)
     return rows
 
 
 def _format_grid_cell(row: dict[str, Any] | None, key: str, best: bool) -> str:
-    """把一格格式化成固定寬度。最佳格前面加星號。"""
+    """Format one cell to a fixed width. The best cell gets a leading asterisk."""
     if row is None or not row["lookahead_ok"] or not math.isfinite(_metric_value(row, key)):
         text = "—"
     elif key == "annualized_sides":
@@ -1596,15 +1596,15 @@ def _format_grid_cell(row: dict[str, Any] | None, key: str, best: bool) -> str:
 
 
 def _print_grid_matrix(rows: list[dict[str, Any]], key: str, title: str, higher: bool) -> None:
-    """印出單一指標的 5×5 網格。列是衰退天數，欄是停損。"""
+    """Print one metric as a 5 by 5 grid. Rows are decay days and columns are stops."""
     winners = _best_rows(rows, key, higher)
     winner_keys = {
         (int(item["score_decay_days"]), round(float(item["stop_loss_pct"]), 2))
         for item in winners
     }
-    direction = "越高越好" if higher else "越低越好"
-    print(f"\n{title}（{direction}；* 為最佳）", flush=True)
-    header = f"{'衰退\\\\停損':<12}" + "".join(f"{stop * 100:.0f}%".rjust(8) for stop in _GRID_STOPS)
+    direction = "higher is better" if higher else "lower is better"
+    print(f"\n{title} ({direction}; * is best)", flush=True)
+    header = f"{'decay\\\\stop':<12}" + "".join(f"{stop * 100:.0f}%".rjust(8) for stop in _GRID_STOPS)
     print(header, flush=True)
     by_key = {
         (int(row["score_decay_days"]), round(float(row["stop_loss_pct"]), 2)): row
@@ -1616,44 +1616,44 @@ def _print_grid_matrix(rows: list[dict[str, Any]], key: str, title: str, higher:
             point = (days, round(float(stop), 2))
             cells.append(_format_grid_cell(by_key.get(point), key, point in winner_keys))
         mark = " D" if days == _GRID_CENTER_DAYS else "  "
-        print(f"{days:>2} 天{mark:<6}" + "".join(cells), flush=True)
+        print(f"{days:>2}d{mark:<6}" + "".join(cells), flush=True)
 
 
 def _grid_conclusion(rows: list[dict[str, Any]]) -> str:
     """
-    判斷 D 組是落在多個指標的最佳區，還是鄰近點差很多的單點。
+    Decide whether case D sits in a shared best region, or is a single cell whose neighbors differ a lot.
 
-    參數:
-        rows: 25 格的結果。
+    Args:
+        rows: The 25 cell results.
 
-    回傳:
-        一段結論。最佳點分散且鄰近點明顯不同時，標註穩健性有限。
+    Returns:
+        One conclusion. When the best cells scatter and neighbors differ clearly, it says robustness is limited.
     """
     center_rows = [row for row in rows if _is_center(row) and row["lookahead_ok"]]
     if not center_rows:
-        return "D 組（衰退 10 天、停損 -15%）沒有可用結果，無法判斷是不是局部最優。"
+        return "Case D (decay 10 days, stop -15%) has no usable result, so it cannot be judged as a local optimum."
     center = center_rows[0]
     metrics = (
-        ("annualized_sides", "低換手", False),
-        ("tail_sharpe", "順風 Sharpe", True),
-        ("head_sharpe", "逆風 Sharpe", True),
-        ("head_return", "逆風報酬", True),
-        ("total_return", "總報酬", True),
+        ("annualized_sides", "low turnover", False),
+        ("tail_sharpe", "tailwind Sharpe", True),
+        ("head_sharpe", "headwind Sharpe", True),
+        ("head_return", "headwind return", True),
+        ("total_return", "total return", True),
     )
-    lines = ["五個指標的最佳格子："]
+    lines = ["Best cells for the five metrics:"]
     best_points: list[dict[str, Any]] = []
     near_center = 0
     for key, label, higher in metrics:
         winners = _best_rows(rows, key, higher)
         if not winners:
-            lines.append(f"  {label}：沒有有效格子")
+            lines.append(f"  {label}: no valid cell")
             continue
-        where = "、".join(
-            f"衰退 {int(item['score_decay_days'])} 天 / 停損 {float(item['stop_loss_pct']) * 100:.0f}%"
-            f"（{_num(item[key]) if key.endswith('sharpe') else (_pct(item[key]) if key != 'annualized_sides' else f'{item[key]:.1f}')}）"
+        where = ", ".join(
+            f"decay {int(item['score_decay_days'])} days / stop {float(item['stop_loss_pct']) * 100:.0f}%"
+            f" ({_num(item[key]) if key.endswith('sharpe') else (_pct(item[key]) if key != 'annualized_sides' else f'{item[key]:.1f}')})"
             for item in winners
         )
-        lines.append(f"  {label}：{where}")
+        lines.append(f"  {label}: {where}")
         best_points.extend(winners)
         if any(_grid_distance(center, item) <= 1 for item in winners):
             near_center += 1
@@ -1663,10 +1663,10 @@ def _grid_conclusion(rows: list[dict[str, Any]]) -> str:
         farthest = max(_grid_distance(left, right) for left in best_points for right in best_points)
         scattered = farthest >= 3
         lines.append(
-            f"這些最佳點在網格上的最遠距離是 {farthest} 格"
-            f"（0 是同一格，1 是相鄰，4 是對角）。"
+            f"The farthest distance among these best cells is {farthest} steps "
+            f"(0 is the same cell, 1 is a neighbor, 4 is a corner)."
         )
-    lines.append(f"其中 {near_center} 個指標的最佳點落在 D 組或它的鄰格。")
+    lines.append(f"{near_center} metrics have their best cell on D or a neighbor of D.")
 
     neighbors = [
         row for row in rows
@@ -1677,53 +1677,53 @@ def _grid_conclusion(rows: list[dict[str, Any]]) -> str:
         gaps = _neighbor_gaps(center, row)
         if len(gaps) >= 2:
             different.append(
-                f"衰退 {int(row['score_decay_days'])} 天 / 停損 {float(row['stop_loss_pct']) * 100:.0f}%"
-                f"（{('、'.join(gaps))}）"
+                f"decay {int(row['score_decay_days'])} days / stop {float(row['stop_loss_pct']) * 100:.0f}%"
+                f" ({', '.join(gaps)})"
             )
     if different:
-        lines.append("和 D 組差得明顯的鄰近點：" + "；".join(different) + "。")
+        lines.append("Neighbors that differ clearly from D: " + "; ".join(different) + ".")
     else:
-        lines.append("八個鄰近點沒有同時在兩個以上指標和 D 組差出設定的幅度。")
+        lines.append("None of the eight neighbors differs from D by the set gap on two or more metrics at once.")
 
-    # 鄰近點明顯不同，或最佳點散到網格兩端且 D 不是多數指標的高地
+    # Neighbors differ clearly, or the best cells sit at opposite ends and D is not the high ground for most metrics.
     fragile = len(different) >= 3 or (scattered and near_center < 3)
     if fragile:
-        lines.append("參數選擇對結果敏感，此結論的穩健性有限。")
+        lines.append("The result is sensitive to the parameter choice, so this conclusion has limited robustness.")
     elif near_center >= 3:
         lines.append(
-            "D 組落在多個指標最佳點的鄰近區域，這支持它是這個小網格裡的局部最優，而不是單獨一格的巧合。"
+            "D sits next to the best cell on several metrics, which supports it as a local optimum on this small grid rather than a one-cell coincidence."
         )
     else:
-        lines.append("最佳點沒有聚在 D 組周圍。D 組在這個網格裡不是多數指標的高地。")
+        lines.append("The best cells do not cluster around D. D is not the high ground for most metrics on this grid.")
     return "\n".join(lines)
 
 
 def _print_local_grid(rows: list[dict[str, Any]]) -> None:
-    """印出 5×5 網格、各指標最佳點，以及 D 組是否只是單點巧合。"""
-    print("\n=== D 組周圍局部網格（停利 25%、前 15 名，扣成本後）===", flush=True)
+    """Print the 5 by 5 grid, the best cell for each metric, and whether D is only a one-cell coincidence."""
+    print("\n=== Local grid around D (take-profit 25%, top 15, after costs) ===", flush=True)
     print(
-        "列是訊號衰退天數，欄是停損。D 標在衰退 10 天那一列、停損 -15% 那一欄。"
-        "星號是該指標的最佳格。",
+        "Rows are signal-decay days and columns are stops. D is the row for 10 decay days and the column for a -15% stop. "
+        "An asterisk marks the best cell for that metric.",
         flush=True,
     )
-    _print_grid_matrix(rows, "annualized_sides", "年化單邊成交", higher=False)
-    _print_grid_matrix(rows, "tail_sharpe", "順風 Sharpe", higher=True)
-    _print_grid_matrix(rows, "head_sharpe", "逆風 Sharpe", higher=True)
-    _print_grid_matrix(rows, "head_return", "逆風報酬", higher=True)
-    _print_grid_matrix(rows, "total_return", "總報酬", higher=True)
-    print("\n最佳點是否聚集：", flush=True)
+    _print_grid_matrix(rows, "annualized_sides", "Annualized one-way fills", higher=False)
+    _print_grid_matrix(rows, "tail_sharpe", "Tailwind Sharpe", higher=True)
+    _print_grid_matrix(rows, "head_sharpe", "Headwind Sharpe", higher=True)
+    _print_grid_matrix(rows, "head_return", "Headwind return", higher=True)
+    _print_grid_matrix(rows, "total_return", "Total return", higher=True)
+    print("\nDo the best cells cluster:", flush=True)
     print(_grid_conclusion(rows), flush=True)
 
 
 def _cache_span(symbol: str) -> tuple[date, date] | None:
-    """讀本地 parquet 的起迄日。沒有檔案或讀不到則為 None。"""
+    """Read the first and last dates in a local parquet. Returns None when the file is missing or unreadable."""
     path = _OHLCV_DIR / f"{_yahoo_symbol(symbol)}.parquet"
     if not path.is_file():
         return None
     try:
         frame = pd.read_parquet(path, columns=["Close"])
     except Exception as exc:  # noqa: BLE001
-        _log.warning("讀取 %s 價量快取失敗，估算時視為需要重抓: %s", symbol, exc)
+        _log.warning("Could not read the %s price cache; treating it as a re-download for the estimate: %s", symbol, exc)
         return None
     if frame.empty:
         return None
@@ -1736,17 +1736,17 @@ def estimate_ten_year_fetch(
     end: date | None = None,
 ) -> dict[str, Any]:
     """
-    估算 2015 年起 S&P 500 聯集的下載規模，不抓股價。
+    Estimate the download size for the S&P 500 union from 2015, without fetching prices.
 
-    成分股用本地歷史檔的季度時點與事件聯集。
-    價量只檢查已經存在的 parquet，缺檔不連 Yahoo。
+    Membership comes from the local history file's quarterly snapshots and the event union.
+    Prices are checked only against parquet files that already exist. Missing files do not hit Yahoo.
 
-    參數:
-        start: 績效起日。
-        end: 績效迄日。None 表示今天。
+    Args:
+        start: First performance date.
+        end: Last performance date. None means today.
 
-    回傳:
-        聯集檔數、已涵蓋檔數、季度檔數範圍，以及下載與回測的時間區間。
+    Returns:
+        Union count, already-covered count, quarterly size range, and the download and backtest windows.
     """
     end_day = end or date.today()
     fetch_start = start - timedelta(days=_WARMUP_DAYS)
@@ -1765,7 +1765,7 @@ def estimate_ten_year_fetch(
             partial.append(ticker)
     missing = sorted(set(union) - set(covered))
     dotted = sorted(ticker for ticker in union if "." in ticker)
-    # 用一檔已有快取粗估分數計算時間，再按 10 年列數與檔數放大
+    # Time one cached score, then scale by the 10-year row count and the number of names.
     score_sec, rows_cached = _time_one_score(covered)
     rows_10y = 252 * ((end_day - fetch_start).days / 365.25)
     if score_sec and rows_cached:
@@ -1775,7 +1775,7 @@ def estimate_ten_year_fetch(
     n_missing = len(missing)
     download_low = n_missing * _FETCH_SEC_PER_NEW_SYMBOL
     download_high = n_missing * _FETCH_SEC_PER_NEW_SYMBOL_SLOW
-    # 前視偏差檢查會對抽樣日把聯集裡每一檔截斷重算，這段隨檔數變長
+    # The lookahead check truncates and rescores every name in the union on sampled days, so it grows with the name count.
     verify_sec = max(len(union), 1) * 8 * score_each
     backtest_sec = len(union) * score_each + verify_sec
     return {
@@ -1799,7 +1799,7 @@ def estimate_ten_year_fetch(
 
 
 def _time_one_score(covered: list[str]) -> tuple[float, int]:
-    """計時一檔現成快取的技術面分數。回傳（秒數, 列數）。沒有快取則為 (0, 0)。"""
+    """Time the technical score on one cached file. Returns (seconds, row count). (0, 0) when there is no cache."""
     import time
 
     candidates = list(covered)
@@ -1811,7 +1811,7 @@ def _time_one_score(covered: list[str]) -> tuple[float, int]:
     try:
         frame = pd.read_parquet(path)
     except Exception as exc:  # noqa: BLE001
-        _log.warning("無法用快取估算分數時間: %s", exc)
+        _log.warning("Could not time a score from cache: %s", exc)
         return 0.0, 0
     history = _prepare_history(frame)
     started = time.perf_counter()
@@ -1820,119 +1820,119 @@ def _time_one_score(covered: list[str]) -> tuple[float, int]:
 
 
 def _minutes(seconds: float) -> str:
-    """把秒數說成大約幾分鐘。"""
+    """Turn a number of seconds into an approximate minute phrase."""
     minutes = seconds / 60.0
     if minutes < 1:
-        return f"{seconds:.0f} 秒"
-    return f"{minutes:.0f} 分鐘"
+        return f"{seconds:.0f} sec"
+    return f"{minutes:.0f} min"
 
 
 def _print_fetch_estimate(estimate: dict[str, Any]) -> None:
-    """印出 10 年價量抓取的規模與時間，不開始下載。"""
-    print("\n=== 10 年 S&P 500 時點股票池：抓取前估算 ===", flush=True)
+    """Print the size and time of a 10-year price fetch, without starting the download."""
+    print("\n=== 10-year point-in-time S&P 500 universe: estimate before download ===", flush=True)
     print(
-        f"績效期間：{estimate['start']} ~ {estimate['end']}。"
-        f"價量會從 {estimate['fetch_start']} 開始抓，前面約 {_WARMUP_DAYS} 天只做均線暖機。",
+        f"Performance window: {estimate['start']} ~ {estimate['end']}. "
+        f"Prices are fetched from {estimate['fetch_start']}. The first {_WARMUP_DAYS} days are only moving-average warmup.",
         flush=True,
     )
     print(
-        f"季度時點 {estimate['n_quarters']} 個，"
-        f"單季成分股 {estimate['quarter_min']}–{estimate['quarter_max']} 檔"
-        f"（中位數 {estimate['quarter_median']}）。",
+        f"{estimate['n_quarters']} quarterly snapshots, "
+        f"{estimate['quarter_min']}–{estimate['quarter_max']} names in a quarter "
+        f"(median {estimate['quarter_median']}).",
         flush=True,
     )
     print(
-        f"2015 以來至少進過一次指數的聯集：{estimate['n_union']} 檔。"
-        f"其中代號含小數點、下載時會改成 Yahoo 的連字號：{estimate['n_dotted']} 檔。",
+        f"Union of names that were in the index at least once since 2015: {estimate['n_union']}. "
+        f"Of those, {estimate['n_dotted']} have a dot in the symbol and are rewritten to Yahoo's hyphen on download.",
         flush=True,
     )
     print(
-        f"本地快取已涵蓋整段區間：{estimate['n_covered']} 檔。"
-        f"有檔但沒有涵蓋到 2015 前的暖機：{estimate['n_partial']} 檔，這些仍要重抓並合併。"
-        f"還需要下載：{estimate['n_missing']} 檔（另加 SPY，若 SPY 也缺）。",
+        f"Local cache already covers the full window: {estimate['n_covered']}. "
+        f"{estimate['n_partial']} files exist but do not cover the pre-2015 warmup, so they still need a refetch and a merge. "
+        f"Still to download: {estimate['n_missing']} (plus SPY, if SPY is also missing).",
         flush=True,
     )
     print(
-        "預期下載時間："
-        f"{_minutes(estimate['download_low_sec'])}–{_minutes(estimate['download_high_sec'])}"
-        "（每檔約 2–4 秒，含 0.7 秒間隔；失敗會再試 3 次，所以可能更久）。",
+        "Expected download time: "
+        f"{_minutes(estimate['download_low_sec'])}–{_minutes(estimate['download_high_sec'])} "
+        "(about 2–4 seconds per name, including a 0.7 second pause; failures retry 3 times, so it can take longer).",
         flush=True,
     )
     print(
-        "下載完成後，基準參數（停利 25%、停損 -10%、衰退 5 天、前 15 名）"
-        f"再跑一次 10 年回測，大約還要 {_minutes(estimate['backtest_sec'])}。"
-        "前視偏差檢查會隨聯集檔數變長。",
+        "After the download, the baseline (take-profit 25%, stop -10%, decay 5 days, top 15) "
+        f"still needs about {_minutes(estimate['backtest_sec'])} for one 10-year backtest. "
+        "The lookahead check grows with the size of the union.",
         flush=True,
     )
     print(
-        "排名是在當季大約 500 檔裡取前 15 名，不是先前那 34 檔裡的前 15 名。"
-        "同一個 decay_rank=15 會嚴格很多。",
+        "The rank is the top 15 among about 500 names in that quarter, not the top 15 of the earlier 34 names. "
+        "The same decay_rank=15 is much stricter.",
         flush=True,
     )
     print(
-        "已下市或改過代號的公司，Yahoo 可能沒有完整日線，實際進得了回測的檔數會少於聯集。"
-        "這仍是用當時成分股，而不是把今天的 34 檔套回 2015。",
+        "Yahoo may not have a full daily history for delisted or renamed companies, so fewer names than the union will actually enter the backtest. "
+        "This still uses the constituents of the time, rather than mapping today's 34 names back to 2015.",
         flush=True,
     )
 
 
 def _print_ten_year_baseline(result: dict[str, Any]) -> None:
-    """印出 10 年基準回測的筆數、區段 Sharpe，以及 SPY 回調次數。"""
-    head = result["regime"]["逆風段"]
-    tail = result["regime"]["順風段"]
+    """Print trade count, regime Sharpe, and the number of SPY drawdowns for the 10-year baseline."""
+    head = result["regime"]["Headwind"]
+    tail = result["regime"]["Tailwind"]
     episodes = result.get("drawdown_episodes") or []
-    print("\n=== 10 年基準參數（時點 S&P 500，扣成本後）===", flush=True)
+    print("\n=== 10-year baseline (point-in-time S&P 500, after costs) ===", flush=True)
     print(
-        f"期間 {result['start']} ~ {result['end']}。"
-        f"聯集 {result['n_universe_symbols']} 檔，有價量 {result['n_with_prices']} 檔。",
+        f"Window {result['start']} ~ {result['end']}. "
+        f"Union {result['n_universe_symbols']} names, prices for {result['n_with_prices']}.",
         flush=True,
     )
-    print(f"總交易筆數：{result['n_entries']}（3 年、34 檔那次是 186 筆）", flush=True)
+    print(f"Total trades: {result['n_entries']} (the 3-year, 34-name run had 186)", flush=True)
     print(
-        f"順風 Sharpe {_num(float(tail['sharpe']))}，"
-        f"逆風 Sharpe {_num(float(head['sharpe']))}，"
-        f"逆風報酬 {_pct(float(head['strategy_return']))}，"
-        f"總報酬 {_pct(float(result['cumulative_return_net']))}。",
+        f"Tailwind Sharpe {_num(float(tail['sharpe']))}, "
+        f"headwind Sharpe {_num(float(head['sharpe']))}, "
+        f"headwind return {_pct(float(head['strategy_return']))}, "
+        f"total return {_pct(float(result['cumulative_return_net']))}.",
         flush=True,
     )
-    print(f"SPY 從高點回檔超過 8% 的區間：{len(episodes)} 次。", flush=True)
+    print(f"SPY drawdowns of more than 8% from a high: {len(episodes)}.", flush=True)
     for episode in episodes:
         print(
-            f"  {episode['start']} ~ {episode['end']}，"
-            f"高點 {episode['peak_date']}，跌幅 {episode['depth'] * 100:.1f}%",
+            f"  {episode['start']} ~ {episode['end']}, "
+            f"peak {episode['peak_date']}, depth {episode['depth'] * 100:.1f}%",
             flush=True,
         )
     if len(episodes) > 4:
         print(
-            f"這 {len(episodes)} 次多於 2023-10 之後的 4 次，10 年窗口有蓋到更早的回調週期。",
+            f"These {len(episodes)} episodes are more than the 4 after 2023-10, so the 10-year window covers earlier drawdown cycles.",
             flush=True,
         )
     else:
         print(
-            f"這段只數到 {len(episodes)} 次超過 8% 的回調，沒有明顯多於 2023 之後的 4 次。",
+            f"This window has only {len(episodes)} drawdowns above 8%, which is not clearly more than the 4 after 2023.",
             flush=True,
         )
 
 
 def run_ten_year_baseline(confirm: bool = False) -> dict[str, Any]:
     """
-    用基準出場參數跑 2015 至今的時點 S&P 500 回測。
+    Run the point-in-time S&P 500 backtest from 2015 through today with the baseline exit parameters.
 
-    預設只估算下載規模並印出，不抓股價、不跑回測。
-    確認要繼續時才傳 confirm=True。
+    By default it only estimates the download size and prints it. It does not fetch prices or run the backtest.
+    Pass confirm=True to continue.
 
-    參數:
-        confirm: True 才會下載聯集價量並跑基準參數。
+    Args:
+        confirm: True downloads the union prices and runs the baseline parameters.
 
-    回傳:
-        estimate 是估算。ran 為 False 表示這次沒有跑回測。
+    Returns:
+        estimate is the size estimate. ran is False when this call did not run the backtest.
     """
     estimate = estimate_ten_year_fetch()
     _print_fetch_estimate(estimate)
     if not confirm:
         print(
-            "這次沒有下載，也沒有跑 10 年回測。"
-            "確認要繼續時，再呼叫 run_ten_year_baseline(confirm=True)。",
+            "This call did not download anything and did not run the 10-year backtest. "
+            "To continue, call run_ten_year_baseline(confirm=True).",
             flush=True,
         )
         return {"ran": False, "estimate": estimate}
@@ -1948,7 +1948,7 @@ def run_ten_year_baseline(confirm: bool = False) -> dict[str, Any]:
         score_decay_rank=15,
     )
     if not result["lookahead_ok"]:
-        print("10 年回測的交易鏈前視偏差檢查沒有通過，下面的績效不採用。", flush=True)
+        print("The 10-year trade-chain lookahead check failed. The performance below is not used.", flush=True)
         return {"ran": True, "estimate": estimate, "backtest": result}
     _print_ten_year_baseline(result)
     return {"ran": True, "estimate": estimate, "backtest": result}
@@ -1960,22 +1960,22 @@ if __name__ == "__main__":
         raise SystemExit(0)
     _assert_exit_rules()
     group_a = define_three_groups()["A"]
-    print(f"組 A（{len(group_a)} 檔）: {', '.join(group_a)}", flush=True)
+    print(f"Group A ({len(group_a)} names): {', '.join(group_a)}", flush=True)
     print(
-        "事件驅動：每天收盤看前 3 名，最多同時持有 5 檔，等權且不再平衡。"
-        "停利 +25%，停損 -10%，連續 5 天跌出前 15 名則出場。"
-        f"單邊成本 {_ONE_WAY_COST * 100:.2f}%。",
+        "Event-driven: each close looks at the top 3, holds at most 5 names, equal weight, and does not rebalance. "
+        "Take-profit +25%, stop -10%, and exit after 5 days outside the top 15. "
+        f"One-way cost {_ONE_WAY_COST * 100:.2f}%.",
         flush=True,
     )
     monthly = run_group_backtest(group_a)
     monthly_regime = run_regime_split_backtest(tickers=group_a, backtest=monthly)
     event = run_event_driven_backtest(group_a)
     if not event["lookahead_ok"]:
-        print("交易鏈前視偏差檢查沒有通過，下面不把績效當成有效結果。", flush=True)
+        print("The trade-chain lookahead check failed. The performance below is not treated as a valid result.", flush=True)
         raise SystemExit(1)
     print(
-        "前視偏差檢查通過：進場分數用截斷到進場日的價量重算後與完整資料一致；"
-        "出場只用進場日到出場日的資料重放，少一天就不會在原出場日出場。",
+        "Lookahead check passed: the entry score, recomputed on prices truncated at the entry day, matches the full series. "
+        "The exit is replayed only on data from the entry day through the exit day, and dropping one day means it would not exit on the original exit day.",
         flush=True,
     )
     _print_report(monthly, monthly_regime, event)

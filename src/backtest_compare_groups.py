@@ -1,33 +1,39 @@
 # -*- coding: utf-8 -*-
 """
-三組股票母體的技術面回測對照。
+Technical-score backtest comparison across three stock universes.
 
-組 A：2022 年後進過 S&P 500 的重疊名單。
-組 B：組 A，再加上國籍不符、因此進不了 S&P 500 的外國大型股；
-      不含 sp500_but_excluded 那批近年才竄起的美國公司。
-組 C：現在的完整 60 檔，含那批新興公司。
+Group A: names that overlapped the S&P 500 after 2022.
+Group B: Group A plus large foreign names that cannot enter the S&P 500 because of domicile.
+          It excludes the recent US risers in sp500_but_excluded.
+Group C: the current full 60-name list, including those newer companies.
 
-三組用同一段期間、同一套規則：每個月底用當天技術面分數選前 3 名，
-等權持有到下一個月底（大約 30 個日曆天）。分數在收盤才知道，
-報酬從下一個交易日才開始算，避免用到當天已經走完的漲跌。
+All three use the same window and the same rule: at each month-end, pick the top 3
+by that day's technical score and hold them equal-weight until the next month-end
+(about 30 calendar days). The score is known only at the close, and returns start
+the next trading day, so the day's already-finished move is not used.
 
-交易成本只扣在實際成交的部位：手續費單邊 0.05%，滑價單邊 0.1%。
-買進扣一次、賣出再扣一次。三檔全部換掉時，進出合計 0.30%。
-留在名單裡的持股不重複扣。
+Costs are charged only on shares that actually trade: 0.05% commission and 0.10%
+slippage, each one way. A buy is charged once and a sell is charged once. Replacing
+all three names costs 0.30% round trip. Names that stay in the book are not charged again.
 
-若組 C 明顯好於組 A 與組 B，多出來的績效來自「母體裡有事後才納入的新興公司」，
-不是這套技術面訊號在成熟股票上特別會選。
+If Group C is clearly better than A and B, the extra performance comes from newer
+companies that were added to the universe after the fact, not from the technical
+signal being especially good at picking mature stocks.
 
-組 A 另外做順風／逆風拆分。SPY 從某個收盤高點起、在再次收復該高點之前，
-最低點跌幅超過 8%，整段算逆風；其餘交易日算順風。選股規則不變，
-只把落在該區段的扣成本後日報酬分開複利，用來檢查總成績是不是只靠順風段。
-這段事後標籤在高點隔天就開始算逆風，當時還沒跌到 8%，實盤不知道。
+Group A is also split into tailwind and headwind. A headwind episode is a stretch
+where SPY falls more than 8% from a closing high before that high is recovered.
+Other trading days are tailwind. The stored segment names stay Tailwind and Headwind.
+The selection rule does not change. Only the after-cost daily returns inside each
+segment are compounded, to see whether the full result depends on the tailwind.
+That ex-post label starts the day after the high, before the 8% drop is known, so
+a live book would not have known it.
 
-即時版 realtime_regime 每個交易日只看截至當天的最高收盤價。
-收盤價低於這個高點 8% 以上才標逆風，之後要收盤創新高才解除。
-防禦版在月底換股日若處在即時逆風，該月改持有 SPY，不選個股。
+The realtime regime looks only at the highest close through that day. A close more
+than 8% below that high is labeled Headwind, and the label clears only when the close
+makes a new high. The defensive book holds SPY for a month when the month-end
+rebalance day is already in realtime Headwind, and does not pick single names.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/backtest_compare_groups.py
 """
 
@@ -74,34 +80,34 @@ if not _log.handlers:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-# 組別對照用的歷史窗口，與先前 S&P 500 成分股比較同一段
+# History window for the group comparison, the same span as the earlier S&P 500 membership check.
 _GROUP_START = date(2022, 1, 1)
-# MA200 需要約 200 個交易日，多抓一段日曆天當暖機，這段不計入績效
+# MA200 needs about 200 trading days. Extra calendar days are warmup and are not in the performance.
 _WARMUP_DAYS = 420
-# 未滿這麼多個交易日的股票不進當月候選，避免上市初期指標失真
+# Names with fewer bars than this are not candidates that month, so early-listing indicators do not distort the score.
 _MIN_HISTORY_BARS = 200
 _TOP_N = 3
 _BENCHMARK = "SPY"
-# 無風險利率設為 0，Sharpe 只比較報酬波動，不引入利率假設
+# Risk-free rate is 0. Sharpe compares return volatility and does not assume an interest rate.
 _TRADING_DAYS = 252
-# 組 C 比另外兩組都高出這個幅度，才說「明顯來自新興公司」
+# Group C must beat both other groups by this much before the gap is called "from newer companies".
 _CLEAR_GAP = 0.05
-# 手續費、滑價都是單邊。買進扣一次，賣出再扣一次。
-# 部位全部換掉時：(0.05% + 0.10%) × 2 = 0.30%。
+# Commission and slippage are one way. A buy is charged once and a sell is charged once.
+# Replacing the whole book: (0.05% + 0.10%) x 2 = 0.30%.
 _COMMISSION_ONE_SIDE = 0.0005
 _SLIPPAGE_ONE_SIDE = 0.001
 _ONE_WAY_COST = _COMMISSION_ONE_SIDE + _SLIPPAGE_ONE_SIDE
 _ROUND_TRIP_COST = _ONE_WAY_COST * 2
-# 未扣成本與扣成本後的累積報酬差距超過這個幅度，就印出換股次數
+# When the gap between gross and net cumulative return exceeds this, print the rebalance count.
 _COST_GAP_ALERT = 0.20
-# 從收盤高點下跌超過這個幅度，才把該段連續區間視為逆風
+# A continuous stretch is headwind only after a drop of more than this from a closing high.
 _DRAWDOWN_THRESHOLD = 0.08
 
 _GROUP_ORDER = ("A", "B", "C")
 _GROUP_TITLES = {
-    "A": "A 成熟美股",
-    "B": "B 含外國大型股",
-    "C": "C 完整清單",
+    "A": "A Mature US",
+    "B": "B Plus foreign large caps",
+    "C": "C Full list",
 }
 
 
@@ -110,19 +116,19 @@ def define_three_groups(
     end_date: date = GROUP_DEFINITION_END,
 ) -> dict[str, list[str]]:
     """
-    用 S&P 500 時點比較結果組出三份母體。
+    Build the three universes from the point-in-time S&P 500 comparison.
 
-    組 A 是 overlap。組 B 是完整清單去掉 sp500_but_excluded，
-    所以檔數是「60 減新興公司」，會包含 not_sp500_listed，
-    以及查不到國籍、因此沒被算進那 16 檔的代號。
-    組 C 是 config.TICKER_LIST。
+    Group A is the overlap. Group B is the full list minus sp500_but_excluded,
+    so the count is "60 minus the newer companies". It includes not_sp500_listed
+    and symbols whose country could not be found, so they were not in those 16 names.
+    Group C is config.TICKER_LIST.
 
-    參數:
-        start_date: 判斷「曾經進過 S&P 500」的起日。
-        end_date: 迄日。預設 config.GROUP_DEFINITION_END，名單不隨執行日變動。
+    Args:
+        start_date: First date used to decide "was ever in the S&P 500".
+        end_date: Last date. Defaults to config.GROUP_DEFINITION_END, so the list does not move with the run date.
 
-    回傳:
-        {"A": [...], "B": [...], "C": [...]}，代號已排序。
+    Returns:
+        {"A": [...], "B": [...], "C": [...]}, symbols sorted.
     """
     end = end_date
     current = [str(ticker).upper().strip() for ticker in TICKER_LIST if str(ticker).strip()]
@@ -136,24 +142,24 @@ def define_three_groups(
     group_b = sorted(ticker for ticker in group_c if ticker not in emerging)
 
     if not set(group_a) <= set(group_b) <= set(group_c):
-        raise RuntimeError("三組母體不是巢狀關係，分類結果不能拿來對照")
+        raise RuntimeError("The three universes are not nested, so the classification cannot be compared")
     if not group_a or not group_b or not group_c:
-        raise RuntimeError("三組母體有空清單，無法回測")
+        raise RuntimeError("One of the three universes is empty, so the backtest cannot run")
 
     extra = sorted(set(group_b) - set(group_a))
     _log.info(
-        "三組母體：A=%s 檔，B=%s 檔（比 A 多 %s），C=%s 檔（比 B 多 %s）",
+        "Three universes: A=%s names, B=%s names (%s more than A), C=%s names (%s more than B)",
         len(group_a),
         len(group_b),
-        ",".join(extra) or "無",
+        ",".join(extra) or "none",
         len(group_c),
-        ",".join(sorted(set(group_c) - set(group_b))) or "無",
+        ",".join(sorted(set(group_c) - set(group_b))) or "none",
     )
     return {"A": group_a, "B": group_b, "C": group_c}
 
 
 def _as_timestamp_index(index: pd.Index) -> pd.DatetimeIndex:
-    """把索引收成無時區、歸一到午夜的日期索引。"""
+    """Normalize an index to timezone-naive midnight dates."""
     stamps = pd.to_datetime(index)
     if getattr(stamps, "tz", None) is not None:
         stamps = stamps.tz_localize(None)
@@ -165,14 +171,14 @@ def _score_frame(
     master: pd.DatetimeIndex,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    對面板裡每一檔算技術面分數，並對齊到主日曆。
+    Score every name in the panel and align the result to the master calendar.
 
-    參數:
-        panel: build_ohlcv_panel 的結果，不含基準。
-        master: 績效使用的交易日，通常是 SPY 的日期。
+    Args:
+        panel: Result of build_ohlcv_panel, without the benchmark.
+        master: Trading days used for performance, usually SPY's dates.
 
-    回傳:
-        (收盤價, 技術面分數, 是否已滿最短歷史)。缺資料是 NaN / False。
+    Returns:
+        (closes, technical scores, whether the minimum history is met). Missing data is NaN / False.
     """
     closes: dict[str, pd.Series] = {}
     scores: dict[str, pd.Series] = {}
@@ -184,10 +190,10 @@ def _score_frame(
         try:
             score = compute_tech_score_series(history)
         except Exception as exc:  # noqa: BLE001
-            _log.warning("%s 技術面分數計算失敗，這檔不進候選: %s", ticker, exc)
+            _log.warning("%s technical score failed, so this name is not a candidate: %s", ticker, exc)
             continue
         if score.empty:
-            _log.warning("%s 技術面分數是空的，這檔不進候選", ticker)
+            _log.warning("%s technical score is empty, so this name is not a candidate", ticker)
             continue
         score.index = _as_timestamp_index(score.index)
         close = pd.to_numeric(history["Close"], errors="coerce")
@@ -210,17 +216,17 @@ def _score_frame(
 
 def _month_end_signals(index: pd.DatetimeIndex, start: date, end: date) -> list[pd.Timestamp]:
     """
-    取出績效區間內、每個月最後一個交易日，當作選股日。
+    Take the last trading day of each month inside the performance window as a selection day.
 
-    最後一個交易日本身不當訊號日：當天收盤才選完，已經沒有下一天可以持有。
+    The final trading day itself is not a signal day: the pick is known only at that close, and there is no next day to hold.
 
-    參數:
-        index: 主日曆。
-        start: 績效起日（含）。
-        end: 績效迄日（含）。
+    Args:
+        index: Master calendar.
+        start: First performance date, inclusive.
+        end: Last performance date, inclusive.
 
-    回傳:
-        由早到晚的訊號日。
+    Returns:
+        Signal days from earliest to latest.
     """
     window = index[(index >= pd.Timestamp(start)) & (index <= pd.Timestamp(end))]
     if len(window) < 2:
@@ -231,7 +237,7 @@ def _month_end_signals(index: pd.DatetimeIndex, start: date, end: date) -> list[
 
 
 def _target_weights(picked: list[str]) -> pd.Series:
-    """等權目標部位。空名單代表這個月轉成現金。"""
+    """Equal-weight target book. An empty list means the month is held in cash."""
     if not picked:
         return pd.Series(dtype=float)
     weight = 1.0 / len(picked)
@@ -242,17 +248,17 @@ def _schedule_trade_costs(
     books: list[dict[str, Any]],
 ) -> tuple[dict[pd.Timestamp, float], dict[str, float | int]]:
     """
-    依前後兩期的目標權重計算每次調倉成本。
+    Compute each rebalance cost from the previous and next target weights.
 
-    成本 = (手續費 0.05% + 滑價 0.1%) × (買進權重 + 賣出權重)。
-    三檔全部換成另外三檔時，買進 100%、賣出 100%，合計 0.30%。
-    第一個月從現金建倉，只有買進，扣 0.15%。繼續持有的部位權重沒變，不扣。
+    Cost = (0.05% commission + 0.1% slippage) x (buy weight + sell weight).
+    Replacing all three names buys 100% and sells 100%, for 0.30% total.
+    The first month is built from cash, so only the buy is charged, at 0.15%. Weights that do not change are not charged.
 
-    參數:
-        books: 每期的 first_hold_day 與 weights。
+    Args:
+        books: Each period's first_hold_day and weights.
 
-    回傳:
-        (每個持有首日要扣的成本比例, 換股統計)。
+    Returns:
+        (cost rate charged on each first holding day, rebalance statistics).
     """
     previous = pd.Series(dtype=float)
     cost_on_day: dict[pd.Timestamp, float] = {}
@@ -293,21 +299,22 @@ def _portfolio_returns(
     defend_regime: pd.Series | None = None,
 ) -> tuple[pd.Series, pd.Series, dict[str, float | int]]:
     """
-    依月底分數持有前 3 名，回傳未扣成本的日報酬，以及扣在換股日的成本。
+    Hold the month-end top 3 and return gross daily returns plus the cost charged on rebalance days.
 
-    訊號日 t 的分數只用到 t 收盤。持有區間是 t 之後、下一個訊號日（含）為止的
-    日報酬，也就是吃到「從 t 收盤持有到下一次換股收盤」這一段。
-    成本扣在新部位的第一個持有日：先付交易成本，再吃當天漲跌。
+    The score on signal day t uses only the close through t. The holding window is the daily
+    returns after t through the next signal day, inclusive: the stretch from the close on t
+    to the next rebalance close. Cost is charged on the first day the new book is held:
+    pay the cost first, then take that day's move.
 
-    參數:
-        close: 對齊後的收盤價。防禦版需含 SPY 欄。
-        score: 對齊後的技術面分數。
-        ready: 是否已滿最短歷史。
-        signals: 選股日。
-        defend_regime: 即時順風／逆風。換股日為逆風時，該月改持有 SPY。
+    Args:
+        close: Aligned closes. The defensive book needs a SPY column.
+        score: Aligned technical scores.
+        ready: Whether the minimum history is met.
+        signals: Selection days.
+        defend_regime: Realtime labels, stored as Tailwind or Headwind. A rebalance day labeled Headwind holds SPY for that month.
 
-    回傳:
-        (未扣成本日報酬, 與之對齊的當日成本比例, 換股統計)。
+    Returns:
+        (gross daily returns, same-day cost rates, rebalance statistics).
     """
     daily_ret = close.pct_change()
     weights = pd.DataFrame(0.0, index=close.index, columns=close.columns)
@@ -321,18 +328,18 @@ def _portfolio_returns(
         hold = close.index[(close.index > signal_day) & (close.index <= nxt)]
         if len(hold) == 0:
             continue
-        # 換股日收盤才知道即時逆風。這個月不選個股，整個月持有 SPY。
+        # The realtime label is known only at the rebalance close. This month holds SPY and does not pick single names.
         regime_label = None
         if defend_regime is not None and signal_day in defend_regime.index:
             regime_label = str(defend_regime.loc[signal_day])
-        if regime_label == "逆風":
+        if regime_label == "Headwind":
             n_headwind_signals += 1
             headwind_dates.append(signal_day.date().isoformat())
-        if regime_label == "逆風" and _BENCHMARK in close.columns:
+        if regime_label == "Headwind" and _BENCHMARK in close.columns:
             if pd.notna(close.at[signal_day, _BENCHMARK]):
                 weights.loc[hold, _BENCHMARK] = 1.0
                 _log.info(
-                    "%s 即時逆風，這個月改持有 SPY，持有到 %s",
+                    "%s is realtime Headwind, so this month holds SPY through %s",
                     signal_day.date().isoformat(),
                     pd.Timestamp(hold[-1]).date().isoformat(),
                 )
@@ -349,7 +356,7 @@ def _portfolio_returns(
                     }
                 )
                 continue
-            _log.warning("%s 即時逆風，但沒有 SPY 收盤價，這個月保持現金", signal_day.date())
+            _log.warning("%s is realtime Headwind, but there is no SPY close, so this month stays in cash", signal_day.date())
 
         tradable = (
             score.loc[signal_day].notna()
@@ -358,7 +365,7 @@ def _portfolio_returns(
         )
         ranked = score.loc[signal_day].loc[tradable].dropna()
         if ranked.empty:
-            _log.warning("%s 沒有合格候選，這個月保持現金", signal_day.date())
+            _log.warning("%s has no eligible candidate, so this month stays in cash", signal_day.date())
             picked: list[str] = []
         else:
             order = ranked.reset_index()
@@ -367,13 +374,13 @@ def _portfolio_returns(
             picked = order["ticker"].head(_TOP_N).tolist()
             weights.loc[hold, picked] = 1.0 / len(picked)
             _log.info(
-                "%s 選出 %s，持有到 %s",
+                "%s picked %s, held through %s",
                 signal_day.date().isoformat(),
                 ",".join(picked),
                 pd.Timestamp(hold[-1]).date().isoformat(),
             )
-        # 第一筆是從現金買進，成本落在開始持有的那一天。
-        # 之後的調倉在訊號日收盤換股，成本落在仍持有舊部位的那個收盤。
+        # The first book is bought from cash, so the cost lands on the first holding day.
+        # Later rebalances trade at the signal close, so the cost lands on that close while the old book is still held.
         cost_day = hold[0] if not books else signal_day
         books.append(
             {
@@ -390,7 +397,7 @@ def _portfolio_returns(
     valid = daily_ret.notna() & weights.gt(0)
     effective = weights.where(valid, 0.0)
     scale = effective.sum(axis=1).replace(0.0, np.nan)
-    # 當天沒成交的持股把權重分給其餘仍持有的名字，避免無故變成部分現金
+    # Names that did not trade that day give their weight to the names still held, so the book does not become part cash for no reason.
     renormalized = effective.div(scale, axis=0).fillna(0.0)
     portfolio = (renormalized * daily_ret.fillna(0.0)).sum(axis=1)
     invested = effective.sum(axis=1).gt(0)
@@ -416,27 +423,27 @@ def _portfolio_returns(
         if stamp in costs.index:
             costs.loc[stamp] = cost
         elif cost > 0:
-            _log.warning("換股日 %s 沒有對應報酬，這筆 %.2f%% 成本沒扣到", stamp.date(), cost * 100)
+            _log.warning("Rebalance day %s has no matching return, so this %.2f%% cost was not charged", stamp.date(), cost * 100)
     return gross, costs, stats
 
 
 def _net_returns(gross: pd.Series, costs: pd.Series) -> pd.Series:
     """
-    先扣成本再吃當天報酬。
+    Charge the cost before taking that day's return.
 
-    參數:
-        gross: 未扣成本的日報酬。
-        costs: 同一天要扣掉的淨值比例。
+    Args:
+        gross: Daily returns before costs.
+        costs: Net-asset fraction to subtract on the same day.
 
-    回傳:
-        扣成本後的日報酬。
+    Returns:
+        Daily returns after costs.
     """
     aligned = costs.reindex(gross.index).fillna(0.0)
     return (1.0 - aligned) * (1.0 + gross) - 1.0
 
 
 def _max_drawdown(equity: pd.Series) -> float:
-    """權益曲線的最大回撤。沒有回撤時為 0。"""
+    """Maximum drawdown of an equity curve. Zero when there is no drawdown."""
     if equity.empty:
         return float("nan")
     peak = equity.cummax()
@@ -445,7 +452,7 @@ def _max_drawdown(equity: pd.Series) -> float:
 
 
 def _sharpe(daily_returns: pd.Series) -> float:
-    """年化 Sharpe。無風險利率為 0；波動為 0 時回傳 NaN。"""
+    """Annualized Sharpe. The risk-free rate is 0. Returns NaN when volatility is 0."""
     if len(daily_returns) < 2:
         return float("nan")
     sigma = float(daily_returns.std(ddof=1))
@@ -455,7 +462,7 @@ def _sharpe(daily_returns: pd.Series) -> float:
 
 
 def _cumulative(daily_returns: pd.Series) -> float:
-    """日報酬複利後的累積報酬。"""
+    """Cumulative return from compounding daily returns."""
     if daily_returns.empty:
         return float("nan")
     equity = (1.0 + daily_returns).cumprod()
@@ -470,53 +477,55 @@ def run_group_backtest(
     end_date: date = BACKTEST_END,
 ) -> dict[str, Any]:
     """
-    對單一母體跑月底選前 3 名、持有到下月底的技術面回測。
+    Run the month-end top-3 technical backtest, held to the next month-end, on one universe.
 
-    價量來自 backtest_data.build_ohlcv_panel。分數用
-    compute_tech_score_series，第 t 天不含 t 之後的價格。
-    績效起點之前多抓一段暖機，讓 MA200 在第一個換股日已經有效，
-    暖機期間不計入累積報酬，SPY 也只在相同的持有日上計算。
-    同一組同時算出未扣成本與扣成本後的累積報酬。成本只落在權重有變動的部位。
+    Prices come from backtest_data.build_ohlcv_panel. Scores use
+    compute_tech_score_series, so day t does not include prices after t.
+    Extra history is fetched before the performance start so MA200 is already valid
+    on the first rebalance day. Warmup is not in the cumulative return, and SPY is
+    measured only on the same holding days.
+    The same run reports cumulative return before and after costs. Cost lands only where weights change.
 
-    參數:
-        tickers: 這一組的候選代號。
-        years: 舊版「從今天往回幾年」。None 時改用 start_date ~ end_date 固定區間；
-            有傳入時結果會隨執行日變動，不能拿來對照履歷數字。
-        defend_regime: 即時順風／逆風。有傳入時，換股日為逆風的月份改持有 SPY。
-        start_date: 績效起日（含），預設 config.BACKTEST_START。
-        end_date: 績效迄日（含），預設 config.BACKTEST_END。
+    Args:
+        tickers: Candidate symbols for this group.
+        years: Legacy "years back from today". None uses the fixed start_date to end_date window.
+            A value moves with the run date and cannot be compared with resume numbers.
+        defend_regime: Realtime labels, stored as Tailwind or Headwind. When passed, a month whose rebalance day is Headwind holds SPY.
+        start_date: First performance date, inclusive. Defaults to config.BACKTEST_START.
+        end_date: Last performance date, inclusive. Defaults to config.BACKTEST_END.
 
-    回傳:
-        含 cumulative_return（未扣成本）、cumulative_return_net（扣成本後）、
-        cost_drag、換股統計、excess_vs_spy、sharpe、max_drawdown 的績效字典。
-        另附 net_returns、spy_returns、spy_close，供順風／逆風拆分複用同一條路徑。
+    Returns:
+        A performance dict with cumulative_return (before costs), cumulative_return_net (after costs),
+        cost_drag, rebalance stats, excess_vs_spy, sharpe, and max_drawdown.
+        Also net_returns, spy_returns, and spy_close, so the regime split can reuse the same path.
+        The stored regime names stay Tailwind and Headwind.
     """
     if years is not None:
         if years < 1:
-            raise ValueError(f"years 必須至少 1 年，收到 {years}")
+            raise ValueError(f"years must be at least 1, got {years}")
         end = date.today()
         eval_start = end - timedelta(days=365 * years)
     else:
         end = end_date
         eval_start = start_date
     if eval_start >= end:
-        raise ValueError(f"回測起日 {eval_start} 必須早於迄日 {end}")
+        raise ValueError(f"Backtest start {eval_start} must be before end {end}")
     fetch_start = eval_start - timedelta(days=_WARMUP_DAYS)
     symbols = [str(ticker).upper().strip() for ticker in tickers if str(ticker).strip()]
 
     panel = build_ohlcv_panel([*symbols, _BENCHMARK], fetch_start, end)
     spy = panel.get(_BENCHMARK)
     if spy is None or spy.empty:
-        raise RuntimeError("沒有 SPY 價量，無法計算超額報酬")
+        raise RuntimeError("No SPY prices, so excess return cannot be computed")
 
     master = _as_timestamp_index(spy.index)
     master = master[(master >= pd.Timestamp(fetch_start)) & (master <= pd.Timestamp(end))]
     stock_panel = {ticker: frame for ticker, frame in panel.items() if ticker != _BENCHMARK}
     dropped = sorted(set(symbols) - set(stock_panel))
     if dropped:
-        _log.warning("這些代號沒有價量，已從這一組剔除: %s", ",".join(dropped))
+        _log.warning("These symbols have no prices and were dropped from this group: %s", ",".join(dropped))
     if not stock_panel:
-        raise RuntimeError("這一組沒有任何可用價量，無法回測")
+        raise RuntimeError("This group has no usable prices, so the backtest cannot run")
 
     close, score, ready = _score_frame(stock_panel, master)
     spy_close = pd.to_numeric(spy["Close"], errors="coerce")
@@ -525,7 +534,7 @@ def run_group_backtest(
 
     signals = _month_end_signals(master, eval_start, end)
     if not signals:
-        raise RuntimeError(f"{eval_start} ~ {end} 之間沒有月底換股日")
+        raise RuntimeError(f"No month-end rebalance day between {eval_start} and {end}")
 
     if defend_regime is not None:
         close = close.copy()
@@ -538,12 +547,12 @@ def run_group_backtest(
         defend_regime=defend_regime,
     )
     if strategy_ret.empty or int(trade_stats["n_rebalances"]) == 0:
-        raise RuntimeError("沒有任何一個月選到股票，無法計算績效")
+        raise RuntimeError("No month picked any stock, so performance cannot be computed")
 
     net_ret = _net_returns(strategy_ret, trade_costs)
     spy_ret = spy_close.pct_change().reindex(strategy_ret.index)
     if spy_ret.isna().all():
-        raise RuntimeError("SPY 在持有期間沒有報酬")
+        raise RuntimeError("SPY has no return over the holding window")
     spy_ret = spy_ret.fillna(0.0)
 
     cumulative = _cumulative(strategy_ret)
@@ -579,13 +588,13 @@ def run_group_backtest(
         "sharpe_net": _sharpe(net_ret),
         "max_drawdown": _max_drawdown(equity),
         "max_drawdown_net": _max_drawdown((1.0 + net_ret).cumprod()),
-        # 順風／逆風拆分用。spy_close 含暖機，才能認出回測起點前已開始的回調。
+        # Used by the regime split. spy_close includes warmup so a drawdown that started before the backtest can be recognized.
         "net_returns": net_ret,
         "spy_returns": spy_ret,
         "spy_close": spy_close.dropna(),
     }
     _log.info(
-        "回測完成 %s ~ %s：未扣成本 %.2f%%，扣成本後 %.2f%%，差距 %.2f 個百分點",
+        "Backtest finished %s ~ %s: %.2f%% before costs, %.2f%% after costs, gap %.2f percentage points",
         result["start"],
         result["end"],
         cumulative * 100,
@@ -600,21 +609,23 @@ def realtime_regime(
     threshold: float = _DRAWDOWN_THRESHOLD,
 ) -> pd.Series:
     """
-    用截至當天的資料判斷順風或逆風。
+    Label each day Tailwind or Headwind using only data through that day.
 
-    歷史最高價是當天（含）以前的最高收盤價。收盤價低於這個高點
-    threshold 以上，當天起標成逆風。之後價格回升但還沒創新高，
-    仍然是逆風。收盤價大於等於前高，當天解除，改回順風。
+    The running high is the highest close through today, inclusive. Once the close
+    is more than `threshold` below that high, the day is labeled Headwind. A later
+    bounce that has not made a new high stays Headwind. A close at or above the prior
+    high clears the label and the day is Tailwind again.
 
-    這和事後回調區間不同：事後版從高點隔天就標逆風，
-    即使當時跌幅還沒到 8%。這裡要等跌幅已經發生才標。
+    This is not the ex-post drawdown window. The ex-post version labels Headwind from
+    the day after the high, even when the drop has not yet reached 8%. Here the
+    label waits until the drop has already happened.
 
-    參數:
-        spy_close: SPY 收盤價。
-        threshold: 跌幅門檻，0.08 代表 8%。
+    Args:
+        spy_close: SPY closes.
+        threshold: Drawdown gate. 0.08 means 8%.
 
-    回傳:
-        與有效收盤價同索引的 Series，值為「順風」或「逆風」。
+    Returns:
+        A Series aligned to the valid closes. Values are Tailwind or Headwind.
     """
     prices = pd.to_numeric(spy_close, errors="coerce").dropna()
     prices = prices[~prices.index.duplicated(keep="last")].sort_index()
@@ -631,7 +642,7 @@ def realtime_regime(
             headwind = False
         elif price <= peak * (1.0 - threshold):
             headwind = True
-        labels.append("逆風" if headwind else "順風")
+        labels.append("Headwind" if headwind else "Tailwind")
     return pd.Series(labels, index=prices.index, name="regime")
 
 
@@ -640,19 +651,19 @@ def verify_realtime_regime(
     threshold: float = _DRAWDOWN_THRESHOLD,
 ) -> list[str]:
     """
-    截斷檢查：只給到第 t 天的資料，第 t 天的順風／逆風必須和完整序列一致。
+    Truncation check: the label on day t from data through t must match the full series.
 
-    參數:
-        spy_close: SPY 收盤價。
-        threshold: 與 realtime_regime 相同的跌幅門檻。
+    Args:
+        spy_close: SPY closes.
+        threshold: Same drawdown gate as realtime_regime.
 
-    回傳:
-        不一致的日期字串。空清單表示通過。不一致的日期會直接印出。
+    Returns:
+        Date strings that disagree. An empty list means the check passed. Disagreements are printed.
     """
     prices = pd.to_numeric(spy_close, errors="coerce").dropna()
     prices = prices[~prices.index.duplicated(keep="last")].sort_index()
     if prices.empty:
-        print("即時逆風截斷檢查失敗：沒有 SPY 收盤價", flush=True)
+        print("Realtime regime truncation check failed: no SPY closes", flush=True)
         return ["<empty>"]
     full = realtime_regime(prices, threshold)
     mismatches: list[str] = []
@@ -661,11 +672,11 @@ def verify_realtime_regime(
         if truncated.empty or str(truncated.iloc[-1]) != str(full.iloc[pos]):
             mismatches.append(pd.Timestamp(prices.index[pos]).date().isoformat())
     if mismatches:
-        print(f"即時逆風截斷檢查不一致，共 {len(mismatches)} 天：", flush=True)
+        print(f"Realtime regime truncation check disagreed on {len(mismatches)} days:", flush=True)
         for label in mismatches:
             print(f"  {label}", flush=True)
     else:
-        print(f"即時逆風截斷檢查通過：{len(prices)} 個交易日", flush=True)
+        print(f"Realtime regime truncation check passed: {len(prices)} trading days", flush=True)
     return mismatches
 
 
@@ -674,20 +685,20 @@ def _spy_drawdown_episodes(
     threshold: float = _DRAWDOWN_THRESHOLD,
 ) -> list[dict[str, Any]]:
     """
-    找出收盤價從高點下跌超過門檻的連續區間。
+    Find continuous stretches where the close falls more than the threshold from a high.
 
-    高點是創新高的收盤。下一次收盤再站上這個高點之前，
-    若最低點相對高點的跌幅超過 threshold，整段算一次回調：
-    從高點的下一個交易日起，到收復日（含）為止。
-    資料結束時仍沒收復，終點就是最後一個交易日。
+    A peak is a closing high. Before the next close that retakes that high, if the
+    lowest point is more than `threshold` below the peak, the whole stretch is one
+    drawdown: from the trading day after the peak through the recovery day, inclusive.
+    If the series ends before recovery, the end is the last trading day.
 
-    參數:
-        close: SPY 收盤價，索引為交易日。
-        threshold: 跌幅門檻，0.08 代表 8%。
+    Args:
+        close: SPY closes, indexed by trading day.
+        threshold: Drawdown gate. 0.08 means 8%.
 
-    回傳:
-        每段一個字典，含 peak_date、peak、trough_date、trough、
-        depth（負數）、start、end、recovered。
+    Returns:
+        One dict per episode, with peak_date, peak, trough_date, trough,
+        depth (negative), start, end, and recovered.
     """
     prices = pd.to_numeric(close, errors="coerce").dropna()
     prices = prices[~prices.index.duplicated(keep="last")].sort_index()
@@ -699,7 +710,7 @@ def _spy_drawdown_episodes(
     peak_px = float(prices.iloc[0])
 
     def _record(peak_at: int, end_at: int, recovered: bool, peak_price: float) -> None:
-        """高點到 end_at 之間若跌破門檻，記成一段回調。"""
+        """Record a drawdown from the peak through end_at when the drop breaks the threshold."""
         if end_at <= peak_at:
             return
         segment = prices.iloc[peak_at : end_at + 1]
@@ -739,16 +750,16 @@ def _segment_performance(
     spy: pd.Series,
 ) -> dict[str, Any]:
     """
-    把同一批交易日的策略報酬與 SPY 報酬做成一列對照。
+    Turn strategy and SPY returns on the same trading days into one comparison row.
 
-    參數:
-        name: 區段名稱，例如順風段、逆風段。
-        period: 印在表格上的期間文字。
-        strategy: 該區段的策略日報酬。
-        spy: 同一批日期的 SPY 日報酬。
+    Args:
+        name: Segment name. The stored names are Tailwind and Headwind.
+        period: Period text printed in the table.
+        strategy: Strategy daily returns for the segment.
+        spy: SPY daily returns on the same dates.
 
-    回傳:
-        含策略報酬、SPY 報酬、超額與 Sharpe 的字典。
+    Returns:
+        A dict with strategy return, SPY return, excess, and Sharpe.
     """
     aligned_spy = spy.reindex(strategy.index).fillna(0.0)
     strategy_return = _cumulative(strategy)
@@ -772,27 +783,29 @@ def run_regime_split_backtest(
     end_date: date = BACKTEST_END,
 ) -> dict[str, Any]:
     """
-    把組 A 在回測期間的扣成本後日報酬切成順風段與逆風段。
+    Split Group A's after-cost daily returns into Tailwind and Headwind.
 
-    逆風段是 SPY 從高點下跌超過 8% 的連續區間（見 _spy_drawdown_episodes）。
-    高點可以落在回測起點之前，這樣起點時已經在跌的段落不會被漏掉；
-    績效只計與組 A 持有日重疊的交易日。順風段是扣掉這些日子之後的其餘交易日。
+    Headwind is a continuous stretch where SPY falls more than 8% from a high
+    (see _spy_drawdown_episodes). The peak may sit before the backtest start,
+    so a decline already underway at the start is not missed. Performance counts
+    only trading days that overlap Group A's holding days. Tailwind is every other
+    holding day.
 
-    選股不重跑。訊號仍是全程每個月底用當天技術面分數選前 3 名，
-    區段數字只是把同一條淨值路徑上的日報酬分開複利。
-    因此兩段淨值相乘會回到全程扣成本後的累積報酬。
-    這是事後檢查，不是可以當下使用的交易濾網。
+    Selection is not rerun. Signals are still the month-end top 3 by that day's
+    technical score. The segment numbers only compound daily returns from the same
+    equity path, so the two compounded pieces multiply back to the full after-cost return.
+    This is an ex-post check, not a filter that could have been used live.
 
-    參數:
-        years: 舊版「從今天往回幾年」。None 時用 start_date ~ end_date。已傳入 backtest 時不再重跑。
-        tickers: 組 A 代號。省略時會自己重抓三組母體再取組 A。
-        backtest: 已經跑完的 run_group_backtest 結果，需含 net_returns 與 spy_close。
-        start_date: 績效起日（含），預設 config.BACKTEST_START。
-        end_date: 績效迄日（含），預設 config.BACKTEST_END。
+    Args:
+        years: Legacy "years back from today". None uses start_date to end_date. A passed backtest is not rerun.
+        tickers: Group A symbols. When omitted, the three universes are rebuilt and Group A is taken.
+        backtest: A finished run_group_backtest result. It must include net_returns and spy_close.
+        start_date: First performance date, inclusive. Defaults to config.BACKTEST_START.
+        end_date: Last performance date, inclusive. Defaults to config.BACKTEST_END.
 
-    回傳:
-        episodes 為回調清單，segments 為順風、逆風兩列績效，
-        full_net 為全程扣成本後累積報酬。
+    Returns:
+        episodes is the drawdown list. segments is the Tailwind and Headwind performance rows.
+        full_net is the full-window after-cost cumulative return.
     """
     if backtest is None:
         if tickers is None:
@@ -808,9 +821,9 @@ def run_regime_split_backtest(
     spy_ret = backtest.get("spy_returns")
     spy_close = backtest.get("spy_close")
     if not isinstance(net, pd.Series) or net.empty:
-        raise RuntimeError("回測結果沒有扣成本後日報酬，無法切順風／逆風")
+        raise RuntimeError("The backtest has no after-cost daily returns, so it cannot be split into Tailwind and Headwind")
     if not isinstance(spy_ret, pd.Series) or not isinstance(spy_close, pd.Series):
-        raise RuntimeError("回測結果沒有 SPY 價格，無法偵測回調")
+        raise RuntimeError("The backtest has no SPY prices, so drawdowns cannot be detected")
 
     episodes = _spy_drawdown_episodes(spy_close, _DRAWDOWN_THRESHOLD)
     window_start = pd.Timestamp(net.index.min())
@@ -823,13 +836,13 @@ def run_regime_split_backtest(
             continue
         visible.append(episode)
         _log.info(
-            "SPY 回調 %s ~ %s，高點 %s %.2f，最大跌幅 %.1f%%，%s",
+            "SPY drawdown %s ~ %s, peak %s %.2f, max drop %.1f%%, %s",
             episode["start"],
             episode["end"],
             episode["peak_date"],
             episode["peak"],
             episode["depth"] * 100,
-            "已收復" if episode["recovered"] else "尚未收復",
+            "recovered" if episode["recovered"] else "not yet recovered",
         )
 
     headwind = pd.Series(False, index=net.index)
@@ -842,7 +855,7 @@ def run_regime_split_backtest(
         overlap_end = min(end, window_end)
         period_parts.append(
             f"{overlap_start.date()} ~ {overlap_end.date()}"
-            f"（高點 {episode['peak_date']}，跌幅 {episode['depth'] * 100:.1f}%）"
+            f" (peak {episode['peak_date']}, drop {episode['depth'] * 100:.1f}%)"
         )
 
     head_ret = net.loc[headwind]
@@ -850,25 +863,25 @@ def run_regime_split_backtest(
     head_spy = spy_ret.reindex(head_ret.index)
     tail_spy = spy_ret.reindex(tail_ret.index)
 
-    # 兩段必須把每個持有日剛好分到一邊，相乘才會回到全程淨值
+    # The two segments must partition every holding day, so their product returns to the full net equity.
     combined = float((1.0 + head_ret).prod() * (1.0 + tail_ret).prod() - 1.0)
     full_net = float(backtest["cumulative_return_net"])
     if math.isfinite(full_net) and not math.isclose(combined, full_net, rel_tol=0, abs_tol=1e-8):
         _log.warning(
-            "順風與逆風複利相乘 %.4f%%，與全程扣成本後 %.4f%% 不一致",
+            "Compounded Tailwind times Headwind is %.4f%%, which does not match the full after-cost %.4f%%",
             combined * 100,
             full_net * 100,
         )
 
     if visible:
-        head_period = "；".join(period_parts)
+        head_period = "; ".join(period_parts)
     else:
-        head_period = "這段期間沒有從高點下跌超過 8% 的連續區間"
-    tail_period = f"{window_start.date()} ~ {window_end.date()}，扣除回調日"
+        head_period = "No continuous stretch fell more than 8% from a high in this window"
+    tail_period = f"{window_start.date()} ~ {window_end.date()}, excluding drawdown days"
 
     segments = [
-        _segment_performance("順風段", tail_period, tail_ret, tail_spy),
-        _segment_performance("逆風段", head_period, head_ret, head_spy),
+        _segment_performance("Tailwind", tail_period, tail_ret, tail_spy),
+        _segment_performance("Headwind", head_period, head_ret, head_spy),
     ]
     return {
         "episodes": visible,
@@ -880,23 +893,23 @@ def run_regime_split_backtest(
 
 def _interpret_regime(regime: dict[str, Any]) -> str:
     """
-    判斷逆風段有沒有跑輸 SPY，或 Sharpe 有沒有轉負。
+    Decide whether Headwind lagged SPY, or whether its Sharpe turned negative.
 
-    參數:
-        regime: run_regime_split_backtest 的回傳。
+    Args:
+        regime: Return value of run_regime_split_backtest.
 
-    回傳:
-        一段可直接印出的結論。
+    Returns:
+        A conclusion that can be printed as-is.
     """
     by_name = {row["name"]: row for row in regime["segments"]}
-    head = by_name["逆風段"]
-    tail = by_name["順風段"]
+    head = by_name["Headwind"]
+    tail = by_name["Tailwind"]
     full_net = float(regime["full_net"])
     if not regime["episodes"] or head["n_days"] == 0:
         return (
-            f"組 A 全程扣成本後累積報酬 {_pct(full_net)}。"
-            "這段期間沒有偵測到 SPY 從高點下跌超過 8% 的連續區間，"
-            "無法分開檢驗逆風環境。"
+            f"Group A full-window after-cost cumulative return is {_pct(full_net)}. "
+            "No continuous stretch where SPY fell more than 8% from a high was found, "
+            "so the headwind environment cannot be tested separately."
         )
 
     loses = math.isfinite(head["excess"]) and head["excess"] < 0
@@ -905,49 +918,49 @@ def _interpret_regime(regime: dict[str, Any]) -> str:
         reasons: list[str] = []
         if loses:
             reasons.append(
-                f"逆風段策略報酬 {_pct(head['strategy_return'])}，"
-                f"同期 SPY {_pct(head['spy_return'])}，超額 {_pct(head['excess'])}"
+                f"Headwind strategy return {_pct(head['strategy_return'])}, "
+                f"SPY over the same days {_pct(head['spy_return'])}, excess {_pct(head['excess'])}"
             )
         if sharpe_negative:
-            reasons.append(f"逆風段 Sharpe {_num(head['sharpe'])}，已轉為負值")
+            reasons.append(f"Headwind Sharpe {_num(head['sharpe'])} turned negative")
         return (
-            f"組 A 全程扣成本後累積報酬 {_pct(full_net)}，"
-            f"其中順風段策略報酬 {_pct(tail['strategy_return'])}"
-            f"（Sharpe {_num(tail['sharpe'])}）。"
-            + "。".join(reasons)
-            + "。這段總成績主要由順風段貢獻，策略在逆風環境下的可靠度存疑。"
+            f"Group A full-window after-cost cumulative return is {_pct(full_net)}, "
+            f"of which Tailwind strategy return is {_pct(tail['strategy_return'])}"
+            f" (Sharpe {_num(tail['sharpe'])}). "
+            + ". ".join(reasons)
+            + ". This total is driven mainly by Tailwind, so reliability in a headwind is in question."
         )
     return (
-        f"逆風段策略報酬 {_pct(head['strategy_return'])}，"
-        f"同期 SPY {_pct(head['spy_return'])}，超額 {_pct(head['excess'])}，"
-        f"Sharpe {_num(head['sharpe'])}。"
-        f"順風段策略報酬 {_pct(tail['strategy_return'])}，Sharpe {_num(tail['sharpe'])}。"
-        "逆風段沒有跑輸同期 SPY，Sharpe 也沒有轉負。"
+        f"Headwind strategy return {_pct(head['strategy_return'])}, "
+        f"SPY over the same days {_pct(head['spy_return'])}, excess {_pct(head['excess'])}, "
+        f"Sharpe {_num(head['sharpe'])}. "
+        f"Tailwind strategy return {_pct(tail['strategy_return'])}, Sharpe {_num(tail['sharpe'])}. "
+        "Headwind did not lag SPY over the same days, and Sharpe did not turn negative."
     )
 
 
 def _print_regime(regime: dict[str, Any]) -> None:
-    """印出順風段與逆風段的對照表。"""
-    print(f"\n=== 組 A 順風／逆風（{regime['window']}，扣成本後）===", flush=True)
+    """Print the Tailwind and Headwind comparison table."""
+    print(f"\n=== Group A regime split ({regime['window']}, after costs) ===", flush=True)
     print(
-        "回調定義：收盤價從高點到再次收復該高點之前，最低點跌幅超過 "
-        f"{_DRAWDOWN_THRESHOLD * 100:.0f}%。"
-        "策略仍是全程月底選前 3 名，下表只把落在該區段的交易日分開複利。",
+        "Drawdown definition: before the close retakes a high, the lowest point falls more than "
+        f"{_DRAWDOWN_THRESHOLD * 100:.0f}%. "
+        "The strategy is still the full-window month-end top 3. The table only compounds the days that fall in each segment.",
         flush=True,
     )
     if not regime["episodes"]:
-        print("這段期間 SPY 沒有從高點下跌超過 8% 的連續區間。", flush=True)
+        print("SPY had no continuous stretch that fell more than 8% from a high in this window.", flush=True)
     else:
         deepest = min(regime["episodes"], key=lambda item: item["depth"])
         print(
-            f"超過 8% 的回調共 {len(regime['episodes'])} 段，"
-            f"最深的一段高點在 {deepest['peak_date']}，跌幅 {deepest['depth'] * 100:.1f}%。",
+            f"{len(regime['episodes'])} drawdowns exceeded 8%. "
+            f"The deepest peaked on {deepest['peak_date']}, down {deepest['depth'] * 100:.1f}%.",
             flush=True,
         )
-    print("區段 | 期間 | 策略報酬 | SPY 報酬 | 超額 | Sharpe", flush=True)
+    print("Segment | Period | Strategy return | SPY return | Excess | Sharpe", flush=True)
     for row in regime["segments"]:
         print(
-            f"{row['name']} | {row['period']}（{row['n_days']} 個交易日） | "
+            f"{row['name']} | {row['period']} ({row['n_days']} trading days) | "
             f"{_pct(row['strategy_return'])} | {_pct(row['spy_return'])} | "
             f"{_pct(row['excess'])} | {_num(row['sharpe'])}",
             flush=True,
@@ -955,14 +968,14 @@ def _print_regime(regime: dict[str, Any]) -> None:
 
 
 def _pct(value: float) -> str:
-    """把比率格式化成百分比。無效值顯示為破折號。"""
+    """Format a ratio as a percent. A non-finite value is shown as an em dash."""
     if value is None or not math.isfinite(value):
         return "—"
     return f"{value * 100:.1f}%"
 
 
 def _num(value: float) -> str:
-    """把 Sharpe 格式化成兩位小數。"""
+    """Format a Sharpe ratio to two decimals."""
     if value is None or not math.isfinite(value):
         return "—"
     return f"{value:.2f}"
@@ -970,53 +983,53 @@ def _num(value: float) -> str:
 
 def _interpret(results: dict[str, dict[str, Any]]) -> str:
     """
-    用累積報酬判斷組 C 是否明顯好於成熟股母體。
+    Use cumulative return to decide whether Group C is clearly better than the mature universes.
 
-    參數:
-        results: 三組的績效字典。
+    Args:
+        results: Performance dicts for the three groups.
 
-    回傳:
-        一段可直接印出的結論。
+    Returns:
+        A conclusion that can be printed as-is.
     """
     cum = {key: float(results[key]["cumulative_return"]) for key in _GROUP_ORDER}
     gap_a = cum["C"] - cum["A"]
     gap_b = cum["C"] - cum["B"]
     if gap_a >= _CLEAR_GAP and gap_b >= _CLEAR_GAP:
         return (
-            f"組 C 的累積報酬比組 A 高 {gap_a * 100:.1f} 個百分點、"
-            f"比組 B 高 {gap_b * 100:.1f} 個百分點（門檻是 5）。"
-            "選股規則完全相同，多出來的績效來自母體裡那些事後才放進來的新興公司，"
-            "不是技術面訊號在成熟股票上本身會選。"
+            f"Group C's cumulative return is {gap_a * 100:.1f} percentage points above Group A "
+            f"and {gap_b * 100:.1f} above Group B (the bar is 5). "
+            "The selection rule is identical, so the extra performance comes from newer companies "
+            "that were added to the universe after the fact, not from the technical signal being good at picking mature stocks."
         )
     if cum["C"] > cum["A"] and cum["C"] > cum["B"]:
         return (
-            f"組 C 高於組 A（{gap_a * 100:.1f} 個百分點）與組 B（{gap_b * 100:.1f} 個百分點），"
-            "但沒有同時超過 5 個百分點。還不足以單獨說績效主要來自新興公司。"
+            f"Group C is above Group A ({gap_a * 100:.1f} percentage points) and Group B ({gap_b * 100:.1f}), "
+            "but not by more than 5 points on both. That is not enough to say the result comes mainly from newer companies."
         )
     return (
-        "組 C 並沒有同時好於組 A 與組 B。"
-        "在這套月底選前 3 名的規則下，把新興公司放進母體沒有帶來明顯更好的累積報酬。"
+        "Group C is not better than both Group A and Group B. "
+        "Under this month-end top-3 rule, putting newer companies in the universe did not produce a clearly better cumulative return."
     )
 
 
 def _pp(value: float) -> str:
-    """把報酬差距格式化成百分點。無效值顯示為破折號。"""
+    """Format a return gap in percentage points. A non-finite value is shown as an em dash."""
     if value is None or not math.isfinite(value):
         return "—"
     return f"{value * 100:.1f}"
 
 
 def _print_cost_table(results: dict[str, dict[str, Any]]) -> None:
-    """印出未扣成本與扣成本後的累積報酬對照。"""
+    """Print cumulative return before costs next to cumulative return after costs."""
     header = (
-        f"{'組別':<16}{'未扣成本累積報酬':>16}{'扣成本後累積報酬':>16}{'差距(百分點)':>14}"
+        f"{'Group':<28}{'Gross cumulative':>18}{'Net cumulative':>18}{'Gap (pp)':>12}"
     )
     print(header, flush=True)
     print("-" * len(header), flush=True)
     for key in _GROUP_ORDER:
         row = results[key]
         print(
-            f"{_GROUP_TITLES[key]:<16}"
+            f"{_GROUP_TITLES[key]:<28}"
             f"{_pct(row['cumulative_return']):>16}"
             f"{_pct(row['cumulative_return_net']):>16}"
             f"{_pp(row['cost_drag']):>14}",
@@ -1025,42 +1038,42 @@ def _print_cost_table(results: dict[str, dict[str, Any]]) -> None:
 
 
 def _print_turnover(results: dict[str, dict[str, Any]]) -> None:
-    """差距超過 20 個百分點的組別，印出調倉與換股次數。"""
+    """For groups whose gap exceeds 20 percentage points, print rebalance and name-change counts."""
     wide = [key for key in _GROUP_ORDER if float(results[key]["cost_drag"]) > _COST_GAP_ALERT]
     if not wide:
         return
     print(
-        f"差距超過 {_COST_GAP_ALERT * 100:.0f} 個百分點，換股次數如下"
-        "（每一檔買進或賣出算一次；繼續持有的不計）。",
+        f"Gap above {_COST_GAP_ALERT * 100:.0f} percentage points. Name changes below "
+        "(each buy or sell counts once; names that stay are not counted).",
         flush=True,
     )
     print(
-        f"單邊費率 {(_COMMISSION_ONE_SIDE + _SLIPPAGE_ONE_SIDE) * 100:.2f}%"
-        f"（手續費 {_COMMISSION_ONE_SIDE * 100:.2f}% + 滑價 {_SLIPPAGE_ONE_SIDE * 100:.2f}%）。"
-        f"三檔全部換掉時，買賣合計 {_ROUND_TRIP_COST * 100:.2f}%。",
+        f"One-way rate {(_COMMISSION_ONE_SIDE + _SLIPPAGE_ONE_SIDE) * 100:.2f}% "
+        f"(commission {_COMMISSION_ONE_SIDE * 100:.2f}% + slippage {_SLIPPAGE_ONE_SIDE * 100:.2f}%). "
+        f"Replacing all three names costs {_ROUND_TRIP_COST * 100:.2f}% round trip.",
         flush=True,
     )
     for key in wide:
         row = results[key]
         print(
-            f"  {_GROUP_TITLES[key]}：調倉 {row['n_rebalances']} 次，"
-            f"換股 {row['n_name_changes']} 次"
-            f"（買進 {row['n_buys']}、賣出 {row['n_sells']}），"
-            f"平均單邊換手 {row['avg_one_way_turnover'] * 100:.0f}%，"
-            f"成本率加總 {_pct(row['total_cost_rate'])}",
+            f"  {_GROUP_TITLES[key]}: {row['n_rebalances']} rebalances, "
+            f"{row['n_name_changes']} name changes "
+            f"(buys {row['n_buys']}, sells {row['n_sells']}), "
+            f"average one-way turnover {row['avg_one_way_turnover'] * 100:.0f}%, "
+            f"cost rates sum to {_pct(row['total_cost_rate'])}",
             flush=True,
         )
 
 
 def _print_table(results: dict[str, dict[str, Any]]) -> None:
-    """印出三組未扣成本的績效對照表。"""
-    header = f"{'組別':<16}{'檔數':>6}{'累積報酬':>10}{'vs SPY 超額':>12}{'Sharpe':>8}{'最大回撤':>10}"
+    """Print the before-cost performance table for the three groups."""
+    header = f"{'Group':<28}{'Names':>6}{'Cumulative':>12}{'Excess vs SPY':>14}{'Sharpe':>8}{'Max DD':>10}"
     print(header, flush=True)
     print("-" * len(header), flush=True)
     for key in _GROUP_ORDER:
         row = results[key]
         print(
-            f"{_GROUP_TITLES[key]:<16}"
+            f"{_GROUP_TITLES[key]:<28}"
             f"{row['n_tickers']:>6}"
             f"{_pct(row['cumulative_return']):>10}"
             f"{_pct(row['excess_vs_spy']):>12}"
@@ -1071,20 +1084,20 @@ def _print_table(results: dict[str, dict[str, Any]]) -> None:
 
 
 def _assert_realtime_regime_rules() -> None:
-    """用一條手算過的價格，確認跌破 8% 才進逆風、創新高才解除。"""
+    """Check a hand-computed price path: Headwind starts only after an 8% break, and clears only on a new high."""
     index = pd.bdate_range("2024-01-02", periods=7)
     prices = pd.Series([100.0, 100.0, 95.0, 91.0, 95.0, 100.0, 92.0], index=index)
     labels = realtime_regime(prices).tolist()
-    expected = ["順風", "順風", "順風", "逆風", "逆風", "順風", "逆風"]
+    expected = ["Tailwind", "Tailwind", "Tailwind", "Headwind", "Headwind", "Tailwind", "Headwind"]
     if labels != expected:
-        raise AssertionError(f"即時逆風規則與手算不符：{labels}")
+        raise AssertionError(f"Realtime regime does not match the hand calculation: {labels}")
     still_under = realtime_regime(prices.iloc[:5])
-    if str(still_under.iloc[-1]) != "逆風":
-        raise AssertionError("價格回到高點 5% 以內就解除逆風，與規則不符")
+    if str(still_under.iloc[-1]) != "Headwind":
+        raise AssertionError("The label cleared once price was within 5% of the high, which breaks the rule")
 
 
 def _annualized_trades(result: dict[str, Any]) -> float:
-    """年化交易次數。買進與賣出各算一次，除以持有區間的年數。"""
+    """Annualized trade count. Buys and sells each count once, divided by the years in the holding window."""
     start = date.fromisoformat(str(result["start"]))
     end = date.fromisoformat(str(result["end"]))
     years = (end - start).days / 365.25
@@ -1101,34 +1114,34 @@ def run_realtime_defense_compare(
     end_date: date = BACKTEST_END,
 ) -> dict[str, Any]:
     """
-    比較組 A 月度固定規則的基準版與即時逆風防禦版。
+    Compare Group A's fixed monthly rule with the realtime headwind defense.
 
-    基準版每個月底照常選前 3 名。防禦版在換股日收盤已處於即時逆風時，
-    該月改持有 SPY，交易成本仍按權重變動計算。
-    截斷檢查沒過就不跑防禦版，避免把看得到未來的標籤當成可執行規則。
+    The baseline still picks the top 3 at each month-end. The defensive book holds SPY
+    for a month when the rebalance close is already labeled Headwind. Costs still follow weight changes.
+    If the truncation check fails, the defensive book is not run, so a label that can see the future is not treated as a tradable rule.
 
-    參數:
-        tickers: 組 A 的候選代號。
-        years: 舊版「從今天往回幾年」。None 時用 start_date ~ end_date。
-        baseline: 已經跑完的基準回測。有傳入就不再重算，須與這裡的區間相同。
-        start_date: 績效起日（含），預設 config.BACKTEST_START。
-        end_date: 績效迄日（含），預設 config.BACKTEST_END。
+    Args:
+        tickers: Group A candidate symbols.
+        years: Legacy "years back from today". None uses start_date to end_date.
+        baseline: A finished baseline backtest. When passed it is not recomputed, and its window must match.
+        start_date: First performance date, inclusive. Defaults to config.BACKTEST_START.
+        end_date: Last performance date, inclusive. Defaults to config.BACKTEST_END.
 
-    回傳:
-        含 baseline、defensive、mismatches 的字典。
+    Returns:
+        A dict with baseline, defensive, and mismatches.
     """
     _assert_realtime_regime_rules()
     window = {"years": years, "start_date": start_date, "end_date": end_date}
     base = baseline if baseline is not None else run_group_backtest(tickers, **window)
     mismatches = verify_realtime_regime(base["spy_close"])
     if mismatches:
-        raise RuntimeError("即時逆風截斷檢查不一致，防禦版比較沒有執行")
+        raise RuntimeError("Realtime regime truncation check disagreed, so the defensive comparison did not run")
     regime = realtime_regime(base["spy_close"])
     defensive = run_group_backtest(tickers, defend_regime=regime, **window)
     if (defensive["start"], defensive["end"]) != (base["start"], base["end"]):
         raise RuntimeError(
-            f"防禦版區間 {defensive['start']} ~ {defensive['end']} 與基準 "
-            f"{base['start']} ~ {base['end']} 不同，無法對照"
+            f"Defensive window {defensive['start']} ~ {defensive['end']} differs from the baseline "
+            f"{base['start']} ~ {base['end']}, so they cannot be compared"
         )
     return {
         "baseline": base,
@@ -1138,31 +1151,31 @@ def run_realtime_defense_compare(
 
 
 def _window_return(daily: pd.Series, start: str, end: str) -> pd.Series:
-    """切出持有區間的日報酬。區間含起日與迄日。"""
+    """Slice daily returns for a holding window. Both endpoints are included."""
     return daily.loc[pd.Timestamp(start) : pd.Timestamp(end)]
 
 
 def _print_defended_month_gaps(baseline: dict[str, Any], defense: dict[str, Any]) -> None:
     """
-    印出防禦版改持 SPY 的每個月：組 A 照常選股報酬、同期 SPY、兩者差距。
+    Print each month the defensive book held SPY: Group A's normal pick return, SPY over the same days, and the gap.
 
-    持有區間與回測相同，從換股日的下一個交易日到下一個換股日收盤。
-    兩邊都是這段的價格報酬，不把下一次換股的成本算進這個月。
+    The holding window matches the backtest, from the trading day after the rebalance through the next rebalance close.
+    Both sides are price returns for that stretch. The next rebalance's cost is not charged inside the month.
 
-    參數:
-        baseline: 全程選股的回測結果，需含 months 與 gross_returns。
-        defense: 逆風月改持 SPY 的回測結果，用它決定哪些月份要列。
+    Args:
+        baseline: Full stock-picking backtest. It must include months and gross_returns.
+        defense: Backtest that holds SPY in Headwind months. It decides which months are listed.
     """
     stock_by_signal = {month["signal"]: month for month in baseline.get("months", [])}
     gross = baseline.get("gross_returns")
     spy = baseline.get("spy_returns")
     if gross is None or spy is None:
-        _log.warning("基準回測沒有日報酬，無法逐月對照")
+        _log.warning("The baseline backtest has no daily returns, so months cannot be compared")
         return
 
     defended = [month for month in defense.get("months", []) if month.get("defended")]
-    print("\n防禦版改持 SPY 的月份（組 A 照常選股 vs SPY）", flush=True)
-    header = f"{'持有期間':<27}{'組 A 選股':<22}{'組 A 報酬':>10}{'SPY 報酬':>10}{'差距':>10}"
+    print("\nMonths the defensive book held SPY (Group A stock picks vs SPY)", flush=True)
+    header = f"{'Holding window':<27}{'Group A picks':<22}{'Group A':>10}{'SPY':>10}{'Gap':>10}"
     print(header, flush=True)
     print("-" * len(header), flush=True)
     stock_factors: list[float] = []
@@ -1170,16 +1183,16 @@ def _print_defended_month_gaps(baseline: dict[str, Any], defense: dict[str, Any]
     for month in defended:
         stock_month = stock_by_signal.get(month["signal"])
         if stock_month is None:
-            _log.warning("基準回測沒有換股日 %s", month["signal"])
+            _log.warning("Baseline backtest has no rebalance day %s", month["signal"])
             continue
         window = _window_return(gross, stock_month["hold_start"], stock_month["hold_end"])
         spy_window = _window_return(spy, stock_month["hold_start"], stock_month["hold_end"]).reindex(window.index)
         if window.empty or spy_window.isna().all():
-            _log.warning("%s 沒有可對照的日報酬", month["signal"])
+            _log.warning("%s has no daily returns to compare", month["signal"])
             continue
         stock_return = _cumulative(window)
         spy_return = _cumulative(spy_window.fillna(0.0))
-        names = ",".join(stock_month["picked"]) if stock_month["picked"] else "現金"
+        names = ",".join(stock_month["picked"]) if stock_month["picked"] else "cash"
         period = f"{stock_month['hold_start']} ~ {stock_month['hold_end']}"
         print(
             f"{period:<27}{names:<22}"
@@ -1193,33 +1206,33 @@ def _print_defended_month_gaps(baseline: dict[str, Any], defense: dict[str, Any]
         spy_total = float(math.prod(spy_factors) - 1.0)
         print("-" * len(header), flush=True)
         print(
-            f"{f'這 {len(stock_factors)} 段各自複利（不含中間月份）':<49}"
+            f"{f'{len(stock_factors)} stretches compounded separately (middle months excluded)':<49}"
             f"{_pct(stock_total):>10}{_pct(spy_total):>10}{_pct(stock_total - spy_total):>10}",
             flush=True,
         )
 
 
 def _print_realtime_defense(comparison: dict[str, Any]) -> None:
-    """印出基準與即時逆風防禦的扣成本績效，並在沒有改善時如實標註。"""
+    """Print after-cost performance for the baseline and the realtime headwind defense, and say so when there is no improvement."""
     base = comparison["baseline"]
     defense = comparison["defensive"]
     window = f"{base['start']} ~ {base['end']}"
-    print(f"\n=== 即時逆風防禦（組 A 月度固定，扣成本，{window}）===", flush=True)
+    print(f"\n=== Realtime headwind defense (Group A monthly, after costs, {window}) ===", flush=True)
     print(
-        "換股日收盤價已低於截至當天的 SPY 最高收盤價 8%，該月改持有 SPY，"
-        "直到之後某個換股日收盤創新高才恢復選股。",
+        "When the rebalance close is already 8% below the highest SPY close through that day, that month holds SPY. "
+        "Stock picking resumes only after a later rebalance close makes a new high.",
         flush=True,
     )
-    header = f"{'設定':<22}{'總報酬':>10}{'Sharpe':>8}{'最大回撤':>10}{'年化交易次數':>12}"
+    header = f"{'Setting':<28}{'Total return':>14}{'Sharpe':>8}{'Max DD':>10}{'Trades/year':>14}"
     print(header, flush=True)
     print("-" * len(header), flush=True)
     rows = (
-        ("基準（照常選股）", base),
-        ("防禦（逆風持有 SPY）", defense),
+        ("Baseline (keep picking)", base),
+        ("Defense (hold SPY in Headwind)", defense),
     )
     for title, row in rows:
         print(
-            f"{title:<22}"
+            f"{title:<28}"
             f"{_pct(row['cumulative_return_net']):>10}"
             f"{_num(row['sharpe_net']):>8}"
             f"{_pct(row['max_drawdown_net']):>10}"
@@ -1228,69 +1241,69 @@ def _print_realtime_defense(comparison: dict[str, Any]) -> None:
         )
     dates = defense.get("headwind_signal_dates") or []
     print(
-        f"逆風月份數：{defense['n_headwind_signals']}（月底換股日當天已跌破 8%）",
+        f"Headwind months: {defense['n_headwind_signals']} (the month-end rebalance day was already down 8%)",
         flush=True,
     )
     if dates:
-        print("  逆風換股日：" + ", ".join(str(item) for item in dates), flush=True)
+        print("  Headwind rebalance days: " + ", ".join(str(item) for item in dates), flush=True)
     print(
-        f"防禦版實際持有 SPY：{defense['n_defended_months']} 個月",
+        f"Defensive book actually held SPY: {defense['n_defended_months']} months",
         flush=True,
     )
     _print_defended_month_gaps(base, defense)
     sharpe_better = float(defense["sharpe_net"]) > float(base["sharpe_net"])
-    # 最大回撤是負數，數值變大代表跌得比較淺
+    # Max drawdown is negative. A larger number means a shallower drop.
     drawdown_better = float(defense["max_drawdown_net"]) > float(base["max_drawdown_net"])
     print(
-        f"Sharpe {_num(base['sharpe_net'])} → {_num(defense['sharpe_net'])}，"
-        f"最大回撤 {_pct(base['max_drawdown_net'])} → {_pct(defense['max_drawdown_net'])}。",
+        f"Sharpe {_num(base['sharpe_net'])} -> {_num(defense['sharpe_net'])}, "
+        f"max drawdown {_pct(base['max_drawdown_net'])} -> {_pct(defense['max_drawdown_net'])}.",
         flush=True,
     )
     if not sharpe_better or not drawdown_better:
-        print("即時版逆風防禦沒有優勢", flush=True)
+        print("The realtime headwind defense has no edge", flush=True)
 
 
 if __name__ == "__main__":
     groups = define_three_groups()
     print(
-        f"回測規則：{BACKTEST_FIRST_REBALANCE_MONTH} 月底第一次換股，"
-        f"持有到 {BACKTEST_LAST_MONTH} 月底，共 {BACKTEST_MONTHS} 個完整月。"
-        f"日曆邊界 {BACKTEST_START.isoformat()} ~ {BACKTEST_END.isoformat()}，"
-        f"組別名單迄日 {GROUP_DEFINITION_END.isoformat()}",
+        f"Backtest rule: first rebalance at the end of {BACKTEST_FIRST_REBALANCE_MONTH}, "
+        f"held through the end of {BACKTEST_LAST_MONTH}, {BACKTEST_MONTHS} full months. "
+        f"Calendar bounds {BACKTEST_START.isoformat()} ~ {BACKTEST_END.isoformat()}, "
+        f"group-list end date {GROUP_DEFINITION_END.isoformat()}",
         flush=True,
     )
-    print("=== 三組母體 ===", flush=True)
+    print("=== Three universes ===", flush=True)
     for key in _GROUP_ORDER:
-        print(f"{_GROUP_TITLES[key]}（{len(groups[key])} 檔）", flush=True)
+        print(f"{_GROUP_TITLES[key]} ({len(groups[key])} names)", flush=True)
         print("  " + ", ".join(groups[key]), flush=True)
     extra_b = sorted(set(groups["B"]) - set(groups["A"]))
     only_c = sorted(set(groups["C"]) - set(groups["B"]))
-    print(f"組 B 比組 A 多出的外國／未歸類大型股（{len(extra_b)} 檔）: {', '.join(extra_b)}", flush=True)
-    print(f"只在組 C 的新興公司（{len(only_c)} 檔）: {', '.join(only_c)}", flush=True)
+    print(f"Foreign or unclassified large caps in B but not A ({len(extra_b)}): {', '.join(extra_b)}", flush=True)
+    print(f"Newer companies only in C ({len(only_c)}): {', '.join(only_c)}", flush=True)
     print(
-        "規則：每月最後一個交易日收盤，用當天技術面分數選前 3 名，等權持有到下一個月底。"
-        f"未滿 {_MIN_HISTORY_BARS} 個交易日不進候選。"
-        f"換股成本為單邊 {_ONE_WAY_COST * 100:.2f}%（手續費 {_COMMISSION_ONE_SIDE * 100:.2f}% + 滑價 {_SLIPPAGE_ONE_SIDE * 100:.2f}%），"
-        f"三檔全部換掉合計 {_ROUND_TRIP_COST * 100:.2f}%。Sharpe 的無風險利率為 0。",
+        "Rule: on the last trading day of each month, pick the top 3 by that day's technical score and hold them equal-weight to the next month-end. "
+        f"Names with fewer than {_MIN_HISTORY_BARS} trading days are not candidates. "
+        f"Rebalance cost is {_ONE_WAY_COST * 100:.2f}% one way (commission {_COMMISSION_ONE_SIDE * 100:.2f}% + slippage {_SLIPPAGE_ONE_SIDE * 100:.2f}%). "
+        f"Replacing all three names costs {_ROUND_TRIP_COST * 100:.2f}%. Sharpe uses a risk-free rate of 0.",
         flush=True,
     )
 
     results: dict[str, dict[str, Any]] = {}
     for key in _GROUP_ORDER:
-        print(f"\n=== 回測 {_GROUP_TITLES[key]} ===", flush=True)
+        print(f"\n=== Backtest {_GROUP_TITLES[key]} ===", flush=True)
         results[key] = run_group_backtest(groups[key])
 
     spy_return = float(results["A"]["spy_cumulative_return"])
     window = f"{results['A']['start']} ~ {results['A']['end']}"
-    print(f"\n=== 未扣成本（{window}，SPY 同期 {_pct(spy_return)}）===", flush=True)
+    print(f"\n=== Before costs ({window}, SPY over the same window {_pct(spy_return)}) ===", flush=True)
     _print_table(results)
-    print("\n=== 交易成本對照 ===", flush=True)
+    print("\n=== Trading-cost comparison ===", flush=True)
     _print_cost_table(results)
     _print_turnover(results)
     for key in _GROUP_ORDER:
         dropped = results[key]["dropped_tickers"]
         if dropped:
-            print(f"{_GROUP_TITLES[key]} 無價量而剔除: {', '.join(dropped)}", flush=True)
+            print(f"{_GROUP_TITLES[key]} dropped for missing prices: {', '.join(dropped)}", flush=True)
     print(_interpret(results), flush=True)
 
     regime = run_regime_split_backtest(tickers=groups["A"], backtest=results["A"])

@@ -1,6 +1,7 @@
 # US Equity AI Sector Analysis System
 
-A daily stock-screening dashboard for 60 US-listed AI and technology companies,
+A daily stock-screening dashboard for 60 US-listed AI and technology companies
+(59 with usable price history),
 plus the backtesting work done to find out whether its stock-selection signal
 actually has predictive power.
 
@@ -36,6 +37,14 @@ Layer 4  Data platforms      10  SNOW, DDOG, MDB, PATH, GTLB …
 Layer 5  AI applications     12  CRM, NOW, ADBE, INTU, TTD, APP …
 Layer 6  Consumer & content  10  SPOT, NFLX, RBLX, DUOL, SONY …
 ```
+
+**Two classification axes.** The six layers organise the universe thematically,
+by position in the AI value chain. Valuation uses a separate, coarser peer
+grouping of three buckets — semiconductor (15), AI software (33), consumer (12)
+— because P/E comparison needs enough names per bucket to be meaningful, and
+because the six layers cut across very different multiple ranges. Layer 5 alone
+spans names that do not share a fair-value band. The dashboard labels these
+separately as Layer and Peer group.
 
 **Track record** — Each day's picks are logged with entry price and scores, and
 forward returns are backfilled at 1 day / 1 week / 2 weeks / 1 month against SPY.
@@ -179,13 +188,24 @@ had no price data: 14 confirmed delistings or acquisitions (ATVI, PXD, WRK,
 CTLT, JNPR, HES, …) and 15 with no clear cause, some of which are symbol changes
 (FLT → CPAY, PEAK → DOC). Missing rate falls from 5.4% in 2023-09 to 0.2% in
 2026-08. Acquisitions typically close at a premium, so this omission likely
-biases returns *downward*.
+biases returns *downward*. The same problem affects the live universe: CFLT no
+longer returns price data and is dropped from the backtest, so 59 of the 60
+tickers are usable.
 
 **Only the technical dimension is backtested.** The dashboard's fundamental,
 valuation, and sentiment scores cannot be backtested cleanly — yfinance returns
 only current fundamentals, and historical news is not retrievable. Any backtest
 of those dimensions would have look-ahead bias. The results above apply to the
 technical composite only.
+
+**The valuation model fails on cyclical earnings.** The P/E method backs out
+trailing EPS and multiplies by the sector's fair multiple, which breaks when
+earnings sit at a cyclical peak or trough: a memory name trading at a trailing
+P/E of 8 produces a fair value more than three times its price. A plausibility
+guard now flags any implied upside above +100% or below −50% as unreliable and
+returns a neutral valuation sub-score instead of a bullish one, but the
+underlying method remains unsuitable for cyclicals. The valuation dimension is
+not backtested and should be read as a screening input, not a price target.
 
 **Max drawdown is −44.5%** against SPY's −18.8% over the same window, a
 consequence of holding 3 names with no position sizing or volatility targeting.
@@ -203,8 +223,9 @@ predominantly a tech bull market.
 | Approach | Result |
 |---|---|
 | Event-driven exits (take-profit / stop-loss / signal decay) | A 5×5 parameter grid showed extreme sensitivity — shifting the decay window by 2 days moved cumulative return from 307% to 174%. Rejected as overfitting. |
-| Defensive rotation to SPY in drawdowns | Using a real-time regime label (SPY 8% below running high), Sharpe fell 1.24 → 1.09 and return 209.9% → 151.2%. Rejected. |
-| Removing the RSI sub-score | RSI has a negative standalone IC (−0.043) and correlates −0.86 with short-term reversal, so it looked like it was cancelling out the composite. Removing it moved IC 0.055 → 0.059; inverting it made things worse. Hypothesis rejected. |
+| Defensive rotation to SPY in drawdowns | Using a real-time regime label (SPY 8% below its running high), Sharpe fell 1.23 → 1.08 and return 209.9% → 150.7%, across 6 headwind months. Rejected. |
+| Removing the RSI sub-score | RSI has a negative standalone IC (−0.043) and correlates −0.86 with short-term reversal, so it looked like it was cancelling out the composite. Removing it moved IC 0.055 → 0.059; inverting it made things worse (0.052). Hypothesis rejected. |
+| Re-weighting the technical composite | Dropping both the RSI and MACD sub-scores raises composite rank IC from 0.055 to 0.099 (t = 2.27), and a Bollinger + moving-average composite reaches 0.105 (t = 2.31). Both rejected. They are ex-post comparisons on the same 34-name sample, and they are built from the two factors whose significance collapsed hardest on the point-in-time cross-section (Bollinger t 2.10 → 1.19, moving average 1.55 → 0.67). Re-weighting the same noisy inputs produces a higher in-sample IC without producing a signal. |
 
 ---
 

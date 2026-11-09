@@ -1,10 +1,10 @@
 # ============================================================
-# Cursor Ignore - 告訴 Cursor 哪些檔案不要索引
+# Cursor Ignore - files Cursor should not index
 # ============================================================
-# 說明：這些檔案不會被 Cursor Agent 或 Chat 讀取
-#      主要用於保護敏感資料與提升索引效能
+# These files are not read by Cursor Agent or Chat.
+# The main reasons are to protect sensitive data and to keep indexing fast.
 
-# ── 敏感檔案（絕對不能被 index）────────────────────────────
+# ── Sensitive files (must not be indexed) ─────────────────
 .env
 .env.*
 *.key
@@ -12,13 +12,13 @@
 secrets.toml
 credentials.json
 
-# ── 大型快取檔（避免拖慢索引）──────────────────────────────
+# ── Large cache files (keep them out so indexing stays fast) ─
 data/cache/
 data/track_record/*.csv
 logs/
 *.log
 
-# ── Python 產物 ────────────────────────────────────────────
+# ── Python build output ───────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
@@ -28,13 +28,13 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# ── 虛擬環境 ──────────────────────────────────────────────
+# ── Virtual environments ──────────────────────────────────
 venv/
 env/
 .venv/
 .env/
 
-# ── ML 模型檔（太大不索引）─────────────────────────────────
+# ── ML model files (too large to index) ───────────────────
 *.safetensors
 *.bin
 *.pt
@@ -43,12 +43,12 @@ env/
 *.pkl
 ~/.cache/huggingface/
 
-# ── 資料檔（保留結構但不索引內容）──────────────────────────
+# ── Data files (keep the layout, do not index the contents) ─
 data/daily_picks/*.json
 data/cache/**
 data/backfill/**
 
-# ── 系統與 IDE ────────────────────────────────────────────
+# ── System and IDE ────────────────────────────────────────
 .DS_Store
 Thumbs.db
 .vscode/
@@ -56,6 +56,6 @@ Thumbs.db
 *.swp
 *.swo
 
-# ── Node（如果之後有）─────────────────────────────────────
+# ── Node (if it is added later) ───────────────────────────
 node_modules/
 package-lock.json

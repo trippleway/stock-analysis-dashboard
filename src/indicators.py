@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-技術指標計算與綜合技術評分。
+Technical indicators and the combined technical score.
 
-依賴 config.TECH_PARAMS、TECH_SCORE_WEIGHTS；價量資料建議來自 data_collector.fetch_stock_data。
+Depends on config.TECH_PARAMS and TECH_SCORE_WEIGHTS. Price history should come from data_collector.fetch_stock_data.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/indicators.py
 """
 
@@ -17,14 +17,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-# 從專案根目錄載入 config（直接執行本檔時 sys.path 預設為 src/）
+# Load config from the project root (sys.path defaults to src/ when this file is run directly).
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from config import TECH_PARAMS, TECH_SCORE_WEIGHTS  # noqa: E402
 
-# 嘗試載入 ta；失敗則全程使用手動計算
+# Try to import ta. If that fails, the manual calculation is used throughout.
 try:
     from ta.momentum import ROCIndicator, RSIIndicator, StochasticOscillator
     from ta.trend import ADXIndicator, MACD, SMAIndicator
@@ -32,12 +32,12 @@ try:
     from ta.volume import OnBalanceVolumeIndicator
 
     _TA_AVAILABLE = True
-except Exception:  # noqa: BLE001 — 允許任何匯入錯誤並改用手動實作
+except Exception:  # noqa: BLE001 — any import error falls back to the manual implementation
     _TA_AVAILABLE = False
 
 
 def _ma_periods() -> tuple[int, int, int, int]:
-    """由 TECH_PARAMS 取得 MA5/MA20/MA60/MA200 週期。"""
+    """Read the MA5/MA20/MA60/MA200 windows from TECH_PARAMS."""
     p = TECH_PARAMS.get("ma_periods", [5, 20, 60, 200])
     if len(p) != 4:
         return 5, 20, 60, 200
@@ -45,14 +45,14 @@ def _ma_periods() -> tuple[int, int, int, int]:
 
 
 def _wilder_ema(s: pd.Series, length: int) -> pd.Series:
-    """Wilder 平滑（與 ta 內部常用的 ewm(alpha=1/length) 一致）。"""
+    """Wilder smoothing (the same ewm(alpha=1/length) that ta commonly uses)."""
     return s.ewm(alpha=1.0 / length, min_periods=length, adjust=False).mean()
 
 
 def _adx_manual(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
     """
-    手動計算 ADX（平均趨向指標）：衡量趨勢強度，與方向無關。
-    使用 +DI/-DI 與 DX 的 Wilder 平滑近似實作。
+    Manual ADX (average directional index): trend strength, independent of direction.
+    Uses a Wilder-smoothed approximation of +DI, -DI, and DX.
     """
     high = high.astype(float)
     low = low.astype(float)
@@ -83,7 +83,7 @@ def _adx_manual(high: pd.Series, low: pd.Series, close: pd.Series, length: int) 
 
 
 def _macd_manual(close: pd.Series, fast: int, slow: int, signal: int) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """手動 MACD：DIF=快EMA-慢EMA，DEA=DIF 的 EMA，HIST=DIF-DEA。"""
+    """Manual MACD: DIF is the fast EMA minus the slow EMA, DEA is the EMA of DIF, and HIST is DIF minus DEA."""
     ema_fast = close.ewm(span=fast, adjust=False).mean()
     ema_slow = close.ewm(span=slow, adjust=False).mean()
     dif = ema_fast - ema_slow
@@ -93,7 +93,7 @@ def _macd_manual(close: pd.Series, fast: int, slow: int, signal: int) -> tuple[p
 
 
 def _rsi_manual(close: pd.Series, length: int) -> pd.Series:
-    """手動 RSI（Wilder）：相對強弱指標，衡量漲跌動能。"""
+    """Manual RSI (Wilder): relative strength, a measure of up and down momentum."""
     delta = close.diff()
     gain = delta.clip(lower=0.0)
     loss = (-delta).clip(lower=0.0)
@@ -110,7 +110,7 @@ def _stoch_manual(
     window: int,
     smooth: int = 3,
 ) -> tuple[pd.Series, pd.Series]:
-    """手動隨機指標：%K 為收盤在區間位置，%D 為 %K 平滑。"""
+    """Manual stochastic: %K is where the close sits in the range, and %D is the smoothed %K."""
     lowest_low = low.rolling(window, min_periods=window).min()
     highest_high = high.rolling(window, min_periods=window).max()
     k = 100.0 * (close - lowest_low) / (highest_high - lowest_low + 1e-12)
@@ -119,7 +119,7 @@ def _stoch_manual(
 
 
 def _bollinger_manual(close: pd.Series, window: int, n_std: float) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """手動布林帶：中軌為均線，上下軌為均線加減 n 倍標準差。"""
+    """Manual Bollinger bands: the middle band is the moving average, and the outer bands are that average plus or minus n standard deviations."""
     mid = close.rolling(window, min_periods=window).mean()
     std = close.rolling(window, min_periods=window).std(ddof=0)
     upper = mid + n_std * std
@@ -128,7 +128,7 @@ def _bollinger_manual(close: pd.Series, window: int, n_std: float) -> tuple[pd.S
 
 
 def _atr_manual(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
-    """手動 ATR：真實波幅的平均，衡量波動程度。"""
+    """Manual ATR: the average true range, a measure of volatility."""
     prev_close = close.shift(1)
     tr = pd.concat(
         [
@@ -142,13 +142,13 @@ def _atr_manual(high: pd.Series, low: pd.Series, close: pd.Series, length: int) 
 
 
 def _obv_manual(close: pd.Series, volume: pd.Series) -> pd.Series:
-    """手動 OBV：依漲跌決定量能加減的累積指標。"""
+    """Manual OBV: a cumulative volume indicator that adds or subtracts volume based on the price move."""
     direction = np.sign(close.diff().fillna(0.0))
     return (direction * volume.astype(float)).fillna(0.0).cumsum()
 
 
 def _hv20_manual(close: pd.Series, window: int = 20) -> pd.Series:
-    """20 日歷史波動率年化：對數報酬標準差 × sqrt(252)。"""
+    """20-day historical volatility, annualized: the standard deviation of log returns times sqrt(252)."""
     lr = np.log(close / close.shift(1))
     return lr.rolling(window, min_periods=window).std(ddof=0) * np.sqrt(252.0)
 
@@ -159,11 +159,11 @@ def _assign_indicators(
     use_ta: bool,
 ) -> None:
     """
-    將所有指標欄位寫入 out（原地修改）。
+    Write every indicator column into out (modified in place).
 
-    參數:
-        out: 已含 OHLCV 的 DataFrame。
-        use_ta: True 時優先呼叫 ta，失敗則改為手動。
+    Args:
+        out: A DataFrame that already has OHLCV.
+        use_ta: When True, call ta first and fall back to the manual calculation on failure.
     """
     c = out["Close"].astype(float)
     h = out["High"].astype(float)
@@ -186,45 +186,45 @@ def _assign_indicators(
     done_ta = False
     if use_ta and _TA_AVAILABLE:
         try:
-            # ── 移動平均：平滑價格以觀察趨勢方向 ──
+            # Moving averages: smooth the price to see the trend direction.
             out["MA5"] = SMAIndicator(c, window=ma5_w).sma_indicator()
             out["MA20"] = SMAIndicator(c, window=ma20_w).sma_indicator()
             out["MA60"] = SMAIndicator(c, window=ma60_w).sma_indicator()
             out["MA200"] = SMAIndicator(c, window=ma200_w).sma_indicator()
 
-            # ── MACD：快慢線差離與訊號線，用於判斷多空與交叉 ──
+            # MACD: the fast/slow difference and the signal line, used for trend and crosses.
             macd = MACD(c, window_slow=p_macd_s, window_fast=p_macd_f, window_sign=p_macd_sig)
             out["MACD_DIF"] = macd.macd()
             out["MACD_DEA"] = macd.macd_signal()
             out["MACD_HIST"] = macd.macd_diff()
 
-            # ── ADX：趨勢強度（不論漲跌） ──
+            # ADX: trend strength, regardless of up or down.
             out["ADX"] = ADXIndicator(h, lo, c, window=p_adx).adx()
 
-            # ── RSI：14 期相對強弱，辨識超買超賣 ──
+            # RSI: 14-period relative strength, used to spot overbought and oversold.
             out["RSI"] = RSIIndicator(c, window=p_rsi).rsi()
 
-            # ── KD：隨機指標，衡量收盤在區間的相對位置 ──
+            # Stochastic: where the close sits inside the recent range.
             st = StochasticOscillator(h, lo, c, window=p_kd, smooth_window=3)
             out["KD_K"] = st.stoch()
             out["KD_D"] = st.stoch_signal()
 
-            # ── ROC：變動率，衡量一段期間漲跌幅 ──
+            # ROC: rate of change over a window.
             out["ROC"] = ROCIndicator(c, window=p_roc).roc()
 
-            # ── 布林帶：均線加減標準差，觀察價格通道 ──
+            # Bollinger bands: a moving average plus or minus standard deviations, a price channel.
             bb = BollingerBands(c, window=p_bb, window_dev=p_bb_std)
             out["BB_UPPER"] = bb.bollinger_hband()
             out["BB_MIDDLE"] = bb.bollinger_mavg()
             out["BB_LOWER"] = bb.bollinger_lband()
 
-            # ── ATR：真實波幅，衡量波動性 ──
+            # ATR: true range, a measure of volatility.
             out["ATR"] = AverageTrueRange(h, lo, c, window=p_atr).average_true_range()
 
-            # ── 20 日歷史波動率年化 ──
+            # 20-day historical volatility, annualized.
             out["HV20"] = _hv20_manual(c, window=20)
 
-            # ── 成交量：均量、OBV、量比比率 ──
+            # Volume: average volume, OBV, and the volume ratio.
             out["VOL_MA20"] = v.rolling(p_vol_ma, min_periods=p_vol_ma).mean()
             out["OBV"] = OnBalanceVolumeIndicator(c, v).on_balance_volume()
             out["VOL_RATIO"] = v / (out["VOL_MA20"] + 1e-12)
@@ -234,7 +234,7 @@ def _assign_indicators(
             done_ta = False
 
     if not done_ta:
-        # ta 不可用或計算失敗時，改用手動實作（同上註解對應之指標意義）
+        # When ta is unavailable or the calculation fails, use the manual implementation (same indicators as the comments above).
         out["MA5"] = c.rolling(ma5_w, min_periods=ma5_w).mean()
         out["MA20"] = c.rolling(ma20_w, min_periods=ma20_w).mean()
         out["MA60"] = c.rolling(ma60_w, min_periods=ma60_w).mean()
@@ -270,20 +270,20 @@ def _assign_indicators(
 
 def calculate_indicators(price_history: pd.DataFrame, *, use_ta: bool = True) -> pd.DataFrame:
     """
-    由原始 OHLCV 計算並附加所有技術指標欄位。
+    Compute every technical indicator from raw OHLCV and attach the columns.
 
-    參數:
-        price_history: 需包含 Open、High、Low、Close、Volume；索引建議為日期。
-        use_ta: True 時優先用 ta 套件；False 時強制走 pandas 手動實作
-            （rolling / ewm 僅使用當日含以前資料，適合回測）。
+    Args:
+        price_history: Must include Open, High, Low, Close, and Volume. A date index is recommended.
+        use_ta: When True, prefer the ta package. When False, force the pandas implementation.
+            Rolling and ewm use only data through the current day, which is what a backtest needs.
 
-    回傳:
-        複本 DataFrame，含 MA、MACD、ADX、RSI、KD、ROC、布林、ATR、HV20、量能相關欄位。
+    Returns:
+        A copied DataFrame with MA, MACD, ADX, RSI, stochastic, ROC, Bollinger, ATR, HV20, and volume columns.
     """
     required = {"Open", "High", "Low", "Close", "Volume"}
     miss = required - set(price_history.columns)
     if miss:
-        raise ValueError(f"price_history 缺少欄位: {sorted(miss)}")
+        raise ValueError(f"price_history is missing columns: {sorted(miss)}")
 
     out = price_history.copy()
     for col in required:
@@ -299,7 +299,7 @@ def calculate_indicators(price_history: pd.DataFrame, *, use_ta: bool = True) ->
 
 
 def _last_scalar(s: pd.Series) -> float | None:
-    """取序列最後一個有效數值；無則 None。"""
+    """The last valid number in the series, or None."""
     x = s.dropna()
     if x.empty:
         return None
@@ -311,29 +311,30 @@ def _last_scalar(s: pd.Series) -> float | None:
 
 def _score_rsi(curr: float | None, prev: float | None) -> tuple[float, str]:
     """
-    RSI 子分數與中文信號。
+    RSI subscore and signal.
 
-    評分規則對照：
-    - RSI < 30：85 分（超賣反彈機會）
-    - 30 <= RSI < 40：75 分
-    - 40 <= RSI <= 60：70 分（健康區間）
-    - 60 < RSI <= 70：60 分
-    - RSI > 70：40 分（超買警示）
+    Score rules:
+    - RSI < 30: 85 (oversold bounce setup)
+    - 30 <= RSI < 40: 75
+    - 40 <= RSI <= 60: 70 (healthy range)
+    - 60 < RSI <= 70: 60
+    - RSI > 70: 40 (overbought warning). The overbought signal token is left as-is because daily_picker compares it.
     """
     if curr is None:
-        return 50.0, "中性"
+        return 50.0, "Neutral"
 
-    # 信號（含超買/超賣/中性/底部反彈；優先判斷極端區再判斷反彈）
+    # Signals cover overbought, oversold, neutral, and a bounce. Extremes are checked before the bounce.
+    # The overbought signal token is compared in daily_picker and entry_price, so it stays.
     if curr > 70:
-        sig = "超買"
+        sig = "Overbought"
     elif curr < 30:
-        sig = "超賣"
+        sig = "Oversold"
     elif prev is not None and curr > prev and prev < 35:
-        sig = "金叉反彈"
+        sig = "Oversold bounce"
     else:
-        sig = "中性"
+        sig = "Neutral"
 
-    # 分數
+    # Score
     if curr < 30:
         sc = 85.0
     elif curr < 40:
@@ -356,17 +357,17 @@ def _score_macd(
     hist_prev: float | None,
 ) -> tuple[float, str]:
     """
-    MACD 子分數與中文信號。
+    MACD subscore and signal.
 
-    評分規則對照（依優先順序）：
-    - 黃金交叉當天（DIF 剛上穿 DEA）：90 分
-    - 持續多頭（DIF > DEA 且 MACD_HIST > 0）：75 分
-    - 零軸之上且柱狀放大：70 分
-    - 死亡交叉：30 分
-    - 持續空頭：40 分
+    Score rules, in priority order:
+    - Golden cross that day (DIF just crossed above DEA): 90. The golden-cross signal token is left as-is because daily_picker compares it.
+    - Still bullish (DIF > DEA and MACD_HIST > 0): 75
+    - Above zero and the histogram is expanding: 70
+    - Death cross: 30. The death-cross signal token is left as-is because daily_picker compares it.
+    - Still bearish: 40
     """
     if dif is None or dea is None or hist is None:
-        return 50.0, "持續多頭"
+        return 50.0, "Still bullish"
 
     gc = (
         dif_prev is not None
@@ -386,31 +387,31 @@ def _score_macd(
     above_zero_hist = dif > 0 and hist_expand
 
     if gc:
-        sc, sig = 90.0, "金叉"
+        sc, sig = 90.0, "Golden Cross"
     elif dc:
-        sc, sig = 30.0, "死叉"
+        sc, sig = 30.0, "Death Cross"
     elif bull:
-        sc, sig = 75.0, "持續多頭"
+        sc, sig = 75.0, "Still bullish"
     elif above_zero_hist:
-        sc, sig = 70.0, "持續多頭"
+        sc, sig = 70.0, "Still bullish"
     elif bear:
-        sc, sig = 40.0, "持續空頭"
+        sc, sig = 40.0, "Still bearish"
     else:
-        # 邊緣狀態：趨勢剛反轉或在零軸附近震盪
+        # Edge cases: the trend just turned, or price is chopping near zero.
         hist_rising = hist_prev is not None and hist > hist_prev
 
         if dif > 0 and hist_rising:
-            # 零軸上方、柱狀開始轉強 → 多頭初期
-            sc, sig = 65.0, "趨勢轉強"
+            # Above zero and the histogram is starting to strengthen: early bullish.
+            sc, sig = 65.0, "Trend strengthening"
         elif dif > 0 and not hist_rising:
-            # 零軸上方但動能轉弱 → 多頭末段
-            sc, sig = 55.0, "動能減弱"
+            # Above zero but momentum is fading: late bullish.
+            sc, sig = 55.0, "Momentum fading"
         elif dif < 0 and hist_rising:
-            # 零軸下方但柱狀縮短 → 跌勢趨緩
-            sc, sig = 50.0, "跌勢趨緩"
+            # Below zero but the histogram is shrinking: the decline is slowing.
+            sc, sig = 50.0, "Decline slowing"
         else:
-            # 零軸下方且柱狀仍在擴大 → 弱勢
-            sc, sig = 45.0, "弱勢整理"
+            # Below zero and the histogram is still expanding: weak.
+            sc, sig = 45.0, "Weak consolidation"
     return sc, sig
 
 
@@ -421,25 +422,25 @@ def _score_bollinger(
     low: float | None,
 ) -> tuple[float, str]:
     """
-    布林帶子分數與信號。
+    Bollinger subscore and signal.
 
-    評分規則對照（含觸軌、過熱、站穩中軌等）：
-    - 股價觸及下軌（超賣）：85 分
-    - 股價突破上軌：50 分（過熱）
-    - 股價站上中軌且未觸上軌：70 分
-    - 股價在中軌下方：45 分
+    Score rules, including a band touch, overheating, and holding the middle band:
+    - Price touches the lower band (oversold): 85
+    - Price breaks the upper band: 50 (overheated)
+    - Price is above the middle band and has not touched the upper band: 70
+    - Price is below the middle band: 45
     """
     if close is None or up is None or mid is None or low is None:
-        return 50.0, "中軌之下"
+        return 50.0, "Below the middle band"
 
-    # 觸及或跌破下軌（超賣區）— 對應規則「觸及下軌」給分，信號欄用表格用語
+    # At or through the lower band (oversold). The score matches the "touched the lower band" rule.
     if close <= low:
-        return 85.0, "跌破下軌"
+        return 85.0, "Broke the lower band"
     if close > up:
-        return 50.0, "突破上軌"
+        return 50.0, "Broke the upper band"
     if close > mid and close < up:
-        return 70.0, "中軌之上"
-    return 45.0, "中軌之下"
+        return 70.0, "Above the middle band"
+    return 45.0, "Below the middle band"
 
 
 def _score_ma_trend(
@@ -450,24 +451,24 @@ def _score_ma_trend(
     ma200: float | None,
 ) -> tuple[float, str]:
     """
-    均線排列與股價位置評分。
+    Score the moving-average stack and where price sits.
 
-    評分規則對照：
-    - 多頭排列（MA5>MA20>MA60>MA200）：90 分
-    - 部分多頭（MA20>MA60>MA200）：75 分
-    - 股價站上 MA20 與 MA60：70 分
-    - 股價跌破 MA20 但在 MA60 上：50 分
-    - 空頭排列：30 分
+    Score rules:
+    - Bullish stack (MA5>MA20>MA60>MA200): 90. The bullish-stack signal token is left as-is because daily_picker compares it.
+    - Partial bullish stack (MA20>MA60>MA200): 75
+    - Price above MA20 and MA60: 70
+    - Price below MA20 but above MA60: 50
+    - Bearish stack: 30
     """
     if close is None or ma20 is None or ma60 is None:
-        return 50.0, "整理"
+        return 50.0, "Consolidating"
 
     full_bull = (
         ma5 is not None
         and ma200 is not None
         and ma5 > ma20 > ma60 > ma200
     )
-    # 部分多頭：MA20>MA60>MA200（未要求 MA5 亦多頭排列）
+    # Partial bullish stack: MA20>MA60>MA200, without also requiring MA5 to complete the bullish stack.
     partial_bull = ma200 is not None and ma20 > ma60 > ma200
     full_bear = (
         ma5 is not None
@@ -478,63 +479,63 @@ def _score_ma_trend(
     below_20_above_60 = close < ma20 and close > ma60
 
     if full_bull:
-        return 90.0, "多頭排列"
-    # 部分多頭：MA20>MA60>MA200 但未達完整多頭排列，信號歸類為「整理」
+        return 90.0, "Bullish Alignment"
+    # Partial bullish stack: MA20>MA60>MA200 but not a full bullish stack. The signal is "Consolidating".
     if partial_bull:
-        return 75.0, "整理"
+        return 75.0, "Consolidating"
     if full_bear:
-        return 30.0, "空頭排列"
+        return 30.0, "Bearish stack"
     if above_20_60:
-        return 70.0, "整理"
+        return 70.0, "Consolidating"
     if below_20_above_60:
-        return 50.0, "整理"
-    return 55.0, "整理"
+        return 50.0, "Consolidating"
+    return 55.0, "Consolidating"
 
 
 def _score_volume(vol_ratio: float | None, open_: float | None, close: float | None) -> tuple[float, str]:
     """
-    成交量子分數與信號。
+    Volume subscore and signal.
 
-    評分規則對照：
-    - 放量上漲（VOL_RATIO > 1.5 且當日紅 K）：85 分
-    - 正常量能（0.8-1.5 倍）：65 分
-    - 縮量（< 0.5 倍）：50 分
-    - 異常放量下跌（>2 倍且黑 K）：35 分
+    Score rules:
+    - Up on heavy volume (VOL_RATIO > 1.5 and a green candle): 85
+    - Normal volume (0.8-1.5 times): 65
+    - Light volume (< 0.5 times): 50
+    - Down on abnormal volume (>2 times and a red candle): 35
     """
     if vol_ratio is None or open_ is None or close is None:
-        return 50.0, "正常"
+        return 50.0, "Normal"
 
     red = close > open_
     black = close < open_
 
-    # 異常放量下跌（>2 倍且黑 K）
+    # Down on abnormal volume (>2 times and a red candle).
     if vol_ratio > 2.0 and black:
-        return 35.0, "異常放量"
-    # 放量上漲（> 1.5 且紅 K）
+        return 35.0, "Abnormal volume"
+    # Up on heavy volume (> 1.5 and a green candle).
     if vol_ratio > 1.5 and red:
-        return 85.0, "放量上漲"
-    # 縮量（< 0.5 倍）
+        return 85.0, "Up on heavy volume"
+    # Light volume (< 0.5 times).
     if vol_ratio < 0.5:
-        return 50.0, "縮量"
-    # 正常量能（0.8 - 1.5 倍）
+        return 50.0, "Light volume"
+    # Normal volume (0.8 to 1.5 times).
     if 0.8 <= vol_ratio <= 1.5:
-        return 65.0, "正常"
-    return 60.0, "正常"
+        return 65.0, "Normal"
+    return 60.0, "Normal"
 
 
 def calculate_tech_score(df_with_indicators: pd.DataFrame) -> dict[str, Any]:
     """
-    依最後一個交易日資料計算加權技術總分與子分數、信號、關鍵數值。
+    Compute the weighted technical total, subscores, signals, and key values from the last trading day.
 
-    參數:
-        df_with_indicators: 已由 calculate_indicators 附加指標欄位之 DataFrame。
+    Args:
+        df_with_indicators: A DataFrame that already has indicator columns from calculate_indicators.
 
-    回傳:
-        包含 total_score、sub_scores、signals、current_values 的 dict（分數區間 0-100）。
+    Returns:
+        A dict with total_score, sub_scores, signals, and current_values. Scores are on 0-100.
     """
     df = df_with_indicators.dropna(how="all")
     if df.empty:
-        raise ValueError("df_with_indicators 為空")
+        raise ValueError("df_with_indicators is empty")
 
     last = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else None
@@ -638,12 +639,12 @@ if __name__ == "__main__":
 
     raw = fetch_stock_data("NVDA", force_refresh=False)
     if not raw:
-        print("NVDA 資料抓取失敗，請檢查網路或稍後再試。")
+        print("Failed to fetch NVDA data. Check the network or try again later.")
     else:
         ph = raw["price_history"]
         df_ind = calculate_indicators(ph)
         score = calculate_tech_score(df_ind)
-        print("=== NVDA 技術評分摘要 ===")
+        print("=== NVDA technical score ===")
         print("total_score:", score["total_score"])
         print("sub_scores:", score["sub_scores"])
         print("signals:", score["signals"])

@@ -1,2 +1,20 @@
 [theme]
-base = "dark"
+base = "light"
+primaryColor = "#15385C"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F7F8FA"
+textColor = "#10141A"
+borderColor = "#E3E6EA"
+baseRadius = "6px"
+baseFontSize = 14
+font = "sans serif"
+
+[theme.sidebar]
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F7F8FA"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

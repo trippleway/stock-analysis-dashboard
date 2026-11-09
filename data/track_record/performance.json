@@ -1,11 +1,11 @@
 {
-  "snapshot_time": "2026-09-21T15:31:55",
+  "snapshot_time": "2026-11-07T23:49:22",
   "summary": {
-    "total_recommendations": 27,
+    "total_recommendations": 31,
     "completed_1m": 27,
     "date_range": {
       "first": "2026-04-21",
-      "last": "2026-06-12"
+      "last": "2026-11-07"
     }
   },
   "aggregate": {
@@ -244,7 +244,7 @@
   "concentration": {
     "by_ticker": {
       "MU": {
-        "picks": 6,
+        "picks": 7,
         "avg_return_1m": 0.8632011666666667,
         "contribution": 0.294742
       },
@@ -288,8 +288,8 @@
       "ticker": "MU",
       "contribution": 0.294742,
       "share_of_outperformance": 1.0887,
-      "picks": 6
+      "picks": 7
     },
-    "concentration_warning": "績效高度集中於單一標的，樣本代表性有限"
+    "concentration_warning": "Performance is highly concentrated in one name, so the sample is a weak representation"
   }
 }

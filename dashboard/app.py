@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-美股分析 Dashboard（Streamlit）。
+US stock analysis dashboard (Streamlit).
 
-執行方式（於專案根目錄）：
+Run from the project root:
     streamlit run dashboard/app.py
 """
 
@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import html
 import json
+import math
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +22,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-# 讓 dashboard 可直接 import 專案模組
+# Allow the dashboard to import project modules directly
 ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = ROOT / "src"
 if str(ROOT) not in sys.path:
@@ -28,9 +30,9 @@ if str(ROOT) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from config import ALL_STOCKS, PICKS_DIR, SECTOR_MAP, TICKER_LIST  # noqa: E402
-from data_collector import fetch_stock_data  # noqa: E402
-from entry_price import calculate_entry_prices, get_status_emoji, get_status_label_cn  # noqa: E402
+from config import AI_LAYERS, ALL_STOCKS, PICKS_DIR, SCORE_WEIGHTS, SECTOR_MAP, TICKER_LIST  # noqa: E402
+from data_collector import fetch_spy_quote, fetch_stock_data  # noqa: E402
+from entry_price import calculate_entry_prices, get_status_label_cn  # noqa: E402
 from profile_fetcher import get_profile  # noqa: E402
 from fundamentals import analyze_fundamentals, get_stock_sector  # noqa: E402
 from indicators import calculate_indicators, calculate_tech_score  # noqa: E402
@@ -39,24 +41,327 @@ from sentiment import analyze_ticker_sentiment  # noqa: E402
 from track_record import PERFORMANCE_JSON, RECOMMENDATIONS_CSV, calculate_performance  # noqa: E402
 from valuation import calculate_fair_value  # noqa: E402
 
-st.set_page_config(page_title="美股分析 Dashboard", page_icon="📈", layout="wide")
+st.set_page_config(page_title="US Stock Analysis Dashboard", page_icon="📈", layout="wide")
 
-# 顯示用台幣約當匯率（不連動外匯 API，避免額外請求）
+# Same hex values as the CSS custom properties. Plotly cannot read var(--token).
+ACCENT = "#15385C"
+TEXT = "#10141A"
+TEXT_DIM = "#5B6472"
+BORDER = "#E3E6EA"
+BAR_TRACK = "#ECEFF2"
+POSITIVE = "#0E7C5A"
+NEGATIVE = "#B3261E"
+
+# Categorical series colours. Built from the non-directional tokens that stay
+# visible on white. Positive and negative are not in this sequence.
+CHART_COLORS = (
+    ACCENT,
+    TEXT_DIM,
+    TEXT,
+)
+
+# Figures in running text. Applied to the raw string, before HTML escaping.
+_NUMBER_RE = re.compile(r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?")
+
+st.markdown(
+    """
+<style>
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
+
+:root {
+    --bg: #FFFFFF;
+    --surface: #F7F8FA;
+    --border: #E3E6EA;
+    --text: #10141A;
+    --text-dim: #5B6472;
+    --accent: #15385C;
+    --positive: #0E7C5A;
+    --negative: #B3261E;
+    --bar-track: #ECEFF2;
+}
+
+html, body, .stApp, .stApp * {
+    font-family: "IBM Plex Sans", sans-serif !important;
+    font-variant-numeric: tabular-nums;
+}
+.stApp .num,
+.stApp .num *,
+.stApp .metric-value,
+.stApp .metric-value *,
+.stApp [data-testid="stMetricValue"],
+.stApp [data-testid="stMetricValue"] *,
+.stApp [data-testid="stMetricDelta"],
+.stApp [data-testid="stMetricDelta"] *,
+.stApp .data-table td.numcol,
+.stApp .data-table td.numcol *,
+.stApp code, .stApp pre, .stApp kbd, .stApp samp {
+    font-family: "IBM Plex Mono", monospace !important;
+}
+
+.stApp {
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.45;
+}
+header[data-testid="stHeader"],
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+#MainMenu,
+[data-testid="stMainMenu"],
+footer,
+[data-testid="stFooter"] {
+    display: none !important;
+    height: 0 !important;
+}
+.block-container {
+    padding-top: 16px !important;
+    padding-bottom: 16px !important;
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+}
+[data-testid="stVerticalBlock"] {gap: 4px !important;}
+.element-container,
+[data-testid="stElementContainer"],
+[data-testid="stMarkdown"] {margin: 0 !important;}
+[data-testid="stMarkdown"] p,
+[data-testid="stMarkdown"] li,
+.body-line {
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.45;
+    color: var(--text);
+    margin: 0 0 4px 0;
+}
+h1, [data-testid="stHeading"] h1 {
+    font-size: 24px !important;
+    font-weight: 600 !important;
+    line-height: 1.25 !important;
+    color: var(--text) !important;
+    margin: 0 0 4px 0 !important;
+    padding: 0 !important;
+}
+h2, h3, h4, h5, h6,
+.card-title {
+    font-size: 16px !important;
+    font-weight: 600 !important;
+    line-height: 1.3 !important;
+    color: var(--text) !important;
+    margin: 0 0 4px 0 !important;
+}
+[data-testid="stMetricValue"],
+[data-testid="stMetricValue"] * {
+    font-size: 22px !important;
+    font-weight: 500 !important;
+    line-height: 1.2 !important;
+    color: var(--text) !important;
+}
+[data-testid="stMetricLabel"] p,
+[data-testid="stMetricLabel"] label,
+[data-testid="stMetricLabel"] span,
+.metric-label,
+.score-caption,
+.data-table th {
+    font-family: "IBM Plex Sans", sans-serif !important;
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    line-height: 1.3 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.06em !important;
+    color: var(--text-dim) !important;
+}
+.metric-value {
+    font-size: 22px !important;
+    font-weight: 500 !important;
+    line-height: 1.2 !important;
+    color: var(--text);
+}
+.caption,
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] p {
+    font-size: 12px !important;
+    font-weight: 400 !important;
+    line-height: 1.45 !important;
+    color: var(--text-dim) !important;
+    text-transform: none !important;
+    letter-spacing: normal !important;
+    margin: 0 0 4px 0 !important;
+}
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] label {
+    font-size: 14px !important;
+    font-weight: 400 !important;
+    color: var(--text) !important;
+    text-transform: none !important;
+    letter-spacing: normal !important;
+}
+[data-testid="stMetricDelta"]:has([data-testid="stMetricDeltaIcon-Up"]),
+[data-testid="stMetricDelta"]:has([data-testid="stMetricDeltaIcon-Up"]) * {
+    color: var(--positive) !important;
+}
+[data-testid="stMetricDelta"]:has([data-testid="stMetricDeltaIcon-Down"]),
+[data-testid="stMetricDelta"]:has([data-testid="stMetricDeltaIcon-Down"]) * {
+    color: var(--negative) !important;
+}
+.pos {color: var(--positive) !important;}
+.neg {color: var(--negative) !important;}
+
+section[data-testid="stSidebar"] {
+    background: var(--bg) !important;
+    border-right: 1px solid var(--border) !important;
+}
+section[data-testid="stSidebar"] > div,
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"],
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] {
+    background: var(--bg) !important;
+}
+
+[data-testid="stVerticalBlockBorderWrapper"] {
+    border: 1px solid var(--border) !important;
+    border-radius: 6px !important;
+    padding: 16px !important;
+    background: var(--bg) !important;
+    box-shadow: none !important;
+    margin: 0 0 12px 0 !important;
+}
+.card, .callout {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    background: var(--bg);
+    box-shadow: none;
+    margin: 0 0 12px 0;
+}
+.callout {background: var(--surface);}
+.dim {color: var(--text-dim); font-weight: 400;}
+
+.score-block {margin: 4px 0 8px 0;}
+.score-track {
+    height: 4px;
+    width: 100%;
+    background: var(--bar-track);
+    border-radius: 2px;
+    overflow: hidden;
+}
+.score-fill {
+    height: 4px;
+    background: var(--accent);
+    border-radius: 2px;
+}
+.price-line {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 4px 0;
+}
+.status-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 2px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.45;
+    color: var(--bg);
+    background: var(--text-dim);
+    text-transform: none;
+    letter-spacing: normal;
+}
+.status-buy_now {background: var(--accent);}
+.status-watch {
+    background: var(--surface);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+}
+.status-wait {background: var(--text-dim);}
+.status-avoid {background: var(--text);}
+.page-footer {
+    color: var(--text-dim);
+    font-size: 12px;
+    line-height: 1.45;
+    margin: 12px 0 0 0;
+}
+hr {
+    border: none !important;
+    border-top: 1px solid var(--border) !important;
+    height: 0 !important;
+    margin: 12px 0 !important;
+    background: transparent !important;
+}
+.table-wrap {overflow-x: auto; margin: 4px 0 8px 0;}
+table.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: none;
+    background: transparent;
+}
+table.data-table th {
+    text-align: left;
+    padding: 4px 8px;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    background: transparent;
+}
+table.data-table th.numcol,
+table.data-table td.numcol {text-align: right;}
+table.data-table td {
+    font-size: 14px;
+    font-weight: 400;
+    color: var(--text);
+    text-align: left;
+    padding: 4px 8px;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    background: transparent;
+}
+.reason-list {margin: 0 0 4px 16px; padding: 0;}
+.stButton > button,
+[data-testid="stBaseButton-secondary"],
+[data-testid="stBaseButton-primary"] {
+    border-radius: 6px !important;
+    box-shadow: none !important;
+    font-size: 14px !important;
+    font-weight: 500 !important;
+}
+[data-testid="stExpander"] details {
+    border: 1px solid var(--border) !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+    background: var(--bg) !important;
+}
+[data-testid="stAlert"] {
+    background: var(--surface) !important;
+    color: var(--text) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+}
+button[data-baseweb="tab"] {
+    font-size: 14px !important;
+    font-weight: 500 !important;
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# Display-only TWD equivalent (fixed rate, no FX API calls)
 USD_TWD = 32.0
 
-# 公司簡介延伸閱讀：文章類型分組顯示順序
+# Further-reading groups on the company profile, in display order
 ARTICLE_TYPE_ORDER = ("official", "ir", "filing", "reference")
 ARTICLE_TYPE_LABEL: dict[str, str] = {
-    "official": "🏛️ 官方網站",
-    "ir": "💼 投資人關係",
-    "filing": "📑 SEC 與法規文件",
-    "reference": "📌 參考資料",
+    "official": "Official website",
+    "ir": "Investor relations",
+    "filing": "SEC and regulatory filings",
+    "reference": "References",
 }
 
 
 @st.cache_data(ttl=86400)
 def load_profile(ticker: str) -> dict[str, Any] | None:
-    """公司簡介（Dashboard 層 1 天快取，底層另檔案快取 90 天）。"""
+    """Company profile (1-day dashboard cache; the fetcher caches the file for 90 days)."""
     if not (ticker or str(ticker).strip()):
         return None
     return get_profile(str(ticker).strip().upper(), force_refresh=False)
@@ -75,7 +380,7 @@ def _profile_looks_valid(profile: Any) -> bool:
 
 
 def _format_mcap_usd_twd(mcap: Any) -> tuple[str, str]:
-    """市值：美元＋以 USD_TWD 估算台幣。"""
+    """Market cap: USD plus a TWD estimate using USD_TWD."""
     if mcap is None:
         return "—", "—"
     try:
@@ -96,24 +401,25 @@ def _format_mcap_usd_twd(mcap: Any) -> tuple[str, str]:
         ustr = f"${usd:,.0f}"
     ntd = m * USD_TWD
     if ntd >= 1_000_000_000_000.0:
-        tw = f"約 NT$ {ntd / 1_000_000_000_000.0:,.1f} 兆"
+        tw = f"approx. NT$ {ntd / 1_000_000_000_000.0:,.1f} trillion"
     elif ntd >= 100_000_000.0:
-        tw = f"約 NT$ {ntd / 100_000_000.0:,.0f} 億"
+        tw = f"approx. NT$ {ntd / 100_000_000.0:,.0f} hundred million"
     else:
-        tw = f"約 NT$ {ntd / 10_000.0:,.0f} 萬" if ntd >= 10_000 else f"約 NT$ {ntd:,.0f} 元"
-    return ustr, f"{tw}（1 USD ≈ {USD_TWD:.0f} TWD）"
+        tw = f"approx. NT$ {ntd / 10_000.0:,.0f} ×10,000" if ntd >= 10_000 else f"approx. NT$ {ntd:,.0f}"
+    return ustr, f"{tw} (1 USD ≈ {USD_TWD:.0f} TWD)"
 
 
 def _competitor_to_ticker(label: str) -> str | None:
     """
-    將「主要競爭者」文句映射到專案股票代號；若可辨識且與清單相符則回傳，否則 None。
+    Map a competitor phrase to a project ticker.
+    Returns the ticker when it matches the universe, otherwise None.
     """
     if not label or not str(label).strip():
         return None
     s = str(label).strip()
     u = s.upper()
     for tok in s.replace("(", " ").replace(")", " ").replace(",", " ").split():
-        t0 = tok.strip("（）,.").upper()
+        t0 = tok.strip("(),.").upper()
         if t0 in ALL_STOCKS:
             return t0
     if u in ALL_STOCKS or u.replace(" ", "") in ALL_STOCKS:
@@ -133,7 +439,7 @@ def _competitor_to_ticker(label: str) -> str | None:
 
 @st.cache_data(ttl=3600)
 def load_latest_daily_json() -> dict[str, Any] | None:
-    """載入最新 daily_picks JSON。"""
+    """Load the latest daily_picks JSON."""
     picks_dir = Path(PICKS_DIR)
     files = sorted(picks_dir.glob("*.json"))
     if not files:
@@ -146,10 +452,11 @@ def load_latest_daily_json() -> dict[str, Any] | None:
 @st.cache_data(ttl=1800)
 def load_performance() -> dict[str, Any] | None:
     """
-    載入策略績效快照：優先讀 performance.json，不存在時即時計算。
+    Load the strategy performance snapshot.
+    Prefer performance.json; compute it on the spot when the file is missing.
 
-    回傳：
-        績效 dict；讀取與計算都失敗時回傳 None
+    Returns:
+        Performance dict, or None when both the read and the calculation fail.
     """
     path = Path(PERFORMANCE_JSON)
     if path.is_file():
@@ -157,7 +464,7 @@ def load_performance() -> dict[str, Any] | None:
             with open(path, encoding="utf-8") as f:
                 return json.load(f)
         except Exception:  # noqa: BLE001
-            pass  # 快照損壞時改為即時計算
+            pass  # Fall through to a live calculation when the snapshot is corrupt
     try:
         return calculate_performance()
     except Exception:  # noqa: BLE001
@@ -166,7 +473,7 @@ def load_performance() -> dict[str, Any] | None:
 
 @st.cache_data(ttl=1800)
 def load_recommendations() -> pd.DataFrame:
-    """載入推薦紀錄 CSV（供績效頁的完整紀錄表使用）。"""
+    """Load the recommendations CSV for the full history table on the performance page."""
     path = Path(RECOMMENDATIONS_CSV)
     if not path.is_file():
         return pd.DataFrame()
@@ -178,10 +485,10 @@ def load_recommendations() -> pd.DataFrame:
 
 @st.cache_data(ttl=3600)
 def get_stock_bundle(ticker: str) -> dict[str, Any]:
-    """抓取個股資料並整合四大分析。"""
+    """Fetch one stock and combine the four analyses."""
     raw = fetch_stock_data(ticker, force_refresh=False)
     if not raw:
-        raise ValueError(f"{ticker} 無法取得資料")
+        raise ValueError(f"{ticker} has no data")
     ph = raw["price_history"]
     info = raw.get("info", {}) or {}
     current_price = float(raw.get("current_price") or ph["Close"].iloc[-1])
@@ -201,8 +508,17 @@ def get_stock_bundle(ticker: str) -> dict[str, Any]:
 
 
 @st.cache_data(ttl=3600)
+def get_cached_spy_quote() -> tuple[float | None, float | None]:
+    """Cached SPY close and prior-session percent change. (None, None) when unavailable."""
+    try:
+        return fetch_spy_quote(force_refresh=False)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+@st.cache_data(ttl=3600)
 def get_cached_current_price(ticker: str) -> float | None:
-    """快取化查詢個股當前價格（透過 data_collector 當日快取）。"""
+    """Cached current price via the data_collector same-day cache."""
     raw = fetch_stock_data(ticker, force_refresh=False)
     if not raw:
         return None
@@ -217,7 +533,7 @@ def get_cached_current_price(ticker: str) -> float | None:
 
 @st.cache_data(ttl=3600)
 def get_sector_fundamental_avg(ticker: str) -> dict[str, float]:
-    """取得同產業平均基本面子分數（雷達圖比較用）。"""
+    """Average fundamental sub-scores for the same sector, for the radar chart."""
     sector = get_stock_sector(ticker)
     peers = SECTOR_MAP.get(sector, [])
     if not peers:
@@ -236,33 +552,110 @@ def get_sector_fundamental_avg(ticker: str) -> dict[str, float]:
     return {k: float(df[k].mean()) for k in ["growth", "profitability", "financial_health", "industry_outlook"]}
 
 
+def _style_figure(fig: go.Figure, **layout: Any) -> go.Figure:
+    """Apply the shared light template, type, and categorical palette.
+
+    Chart titles are cleared. The page heading above the figure is the title.
+    Gridlines stay on the value axis only.
+
+    Args:
+        fig: Plotly figure to style.
+        **layout: Extra layout settings passed through unchanged.
+
+    Returns:
+        The same figure, after the theme is applied.
+    """
+    layout.pop("title", None)
+    layout.pop("title_text", None)
+    fig.update_layout(
+        template="plotly_white",
+        colorway=list(CHART_COLORS),
+        font=dict(family="IBM Plex Sans, sans-serif", size=12, color=TEXT),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        title_text="",
+        margin=dict(l=48, r=16, t=8, b=32),
+        **layout,
+    )
+    fig.update_layout(title_text="")
+    fig.update_annotations(font=dict(family="IBM Plex Sans, sans-serif", size=12, color=TEXT))
+    kinds = {getattr(trace, "type", None) for trace in fig.data}
+    if "scatterpolar" in kinds:
+        fig.update_polars(
+            radialaxis=dict(
+                gridcolor=BORDER,
+                linecolor=BORDER,
+                showline=False,
+                tickfont=dict(family="IBM Plex Sans, sans-serif", size=12, color=TEXT),
+            ),
+            angularaxis=dict(showgrid=False, showline=False),
+            bgcolor="#FFFFFF",
+        )
+    elif "indicator" not in kinds:
+        fig.update_xaxes(
+            showgrid=False,
+            zeroline=False,
+            showline=False,
+            mirror=False,
+            linewidth=0,
+        )
+        fig.update_yaxes(
+            showgrid=True,
+            gridcolor=BORDER,
+            gridwidth=1,
+            zeroline=True,
+            zerolinecolor=BORDER,
+            zerolinewidth=1,
+            showline=False,
+            mirror=False,
+            linewidth=0,
+        )
+    return fig
+
+
 def pct_color(v: float | None) -> str:
-    """漲跌顏色（美股慣例：漲綠跌紅）。"""
+    """CSS color for a signed figure. None uses the dim text token."""
     if v is None:
-        return "gray"
-    return "#00C853" if v >= 0 else "#FF5252"
+        return "var(--text-dim)"
+    return "var(--positive)" if v >= 0 else "var(--negative)"
 
 
 def get_sentiment_color(label: str) -> str:
-    """新聞情緒標籤顏色。"""
+    """CSS color for a news-sentiment label. Direction uses the palette tokens."""
     return {
-        "強烈看漲": "#00C853",
-        "偏多": "#66BB6A",
-        "中性": "#9E9E9E",
-        "偏空": "#EF5350",
-        "強烈看空": "#D32F2F",
-        "無新聞": "#616161",
-    }.get(label, "#9E9E9E")
+        "Strongly Bullish": "var(--positive)",
+        "Bullish": "var(--positive)",
+        "Neutral": "var(--text-dim)",
+        "Bearish": "var(--negative)",
+        "Strongly Bearish": "var(--negative)",
+        "No News": "var(--text-dim)",
+    }.get(label, "var(--text-dim)")
+
+
+def _sentiment_hex(label: str) -> str:
+    """Hex direction color for Plotly, which cannot read CSS variables.
+
+    Args:
+        label: Sentiment label such as Bullish or Bearish.
+
+    Returns:
+        Positive, negative, or dim text hex from the palette.
+    """
+    if label in {"Strongly Bullish", "Bullish"}:
+        return POSITIVE
+    if label in {"Bearish", "Strongly Bearish"}:
+        return NEGATIVE
+    return TEXT_DIM
 
 
 def _truncate_text(text: str, max_len: int = 80) -> str:
-    """過長文字截斷。"""
+    """Truncate overly long text."""
     s = str(text or "")
     return s if len(s) <= max_len else s[:max_len].rstrip() + "..."
 
 
 def _fmt_news_time(value: Any) -> str:
-    """時間格式化為 YYYY-MM-DD HH:MM。"""
+    """Format a timestamp as YYYY-MM-DD HH:MM."""
     try:
         dt = pd.to_datetime(value)
         if pd.isna(dt):
@@ -273,7 +666,7 @@ def _fmt_news_time(value: Any) -> str:
 
 
 def _find_pick_news(daily: dict[str, Any], ticker: str) -> dict[str, Any] | None:
-    """從每日 picks 中找指定股票 news。"""
+    """Find one ticker's news block inside the daily picks."""
     for p in daily.get("picks", []):
         if str(p.get("ticker", "")).upper() == ticker.upper():
             n = p.get("news")
@@ -283,12 +676,12 @@ def _find_pick_news(daily: dict[str, Any], ticker: str) -> dict[str, Any] | None
 
 @st.cache_data(ttl=3600)
 def get_live_ticker_sentiment(ticker: str) -> dict[str, Any]:
-    """即時情緒分析（快取 1 小時）。"""
+    """Live sentiment analysis (cached for 1 hour)."""
     return analyze_ticker_sentiment(ticker)
 
 
 def _volume_score_dashboard(vol_ratio: float | None) -> float:
-    """與 daily_picker 一致之量能分數（綜合用）。"""
+    """Volume score matching daily_picker, used in the composite."""
     if vol_ratio is None:
         return 35.0
     if vol_ratio > 1.5:
@@ -301,10 +694,17 @@ def _volume_score_dashboard(vol_ratio: float | None) -> float:
 
 
 def _to_float_safe(value: Any, default: float | None = None) -> float | None:
+    """Return a finite float or the supplied fallback.
+
+    Pandas represents missing numeric cells as ``NaN``.  Treating that as a
+    value leaks strings such as ``+nan%`` into the dashboard, so only finite
+    numbers are valid display inputs.
+    """
     try:
         if value is None:
             return default
-        return float(value)
+        result = float(value)
+        return result if math.isfinite(result) else default
     except (TypeError, ValueError):
         return default
 
@@ -312,8 +712,8 @@ def _to_float_safe(value: Any, default: float | None = None) -> float | None:
 @st.cache_data(ttl=3600)
 def compute_entry_analysis(ticker: str) -> dict[str, Any]:
     """
-    與 daily_picker 相近之綜合分數後呼叫 calculate_entry_prices。
-    供個股頁、總覽表使用（結果快取）。
+    Build a composite close to daily_picker, then call calculate_entry_prices.
+    Used by the stock page and the overview table (result is cached).
     """
     sym = str(ticker).strip().upper()
     try:
@@ -349,125 +749,492 @@ def compute_entry_analysis(ticker: str) -> dict[str, Any]:
         return {}
 
 
+# One sentence each, taken from the scoring functions. High means a stronger reading.
+_SCORE_HELP = {
+    "technical": (
+        "Weighted blend of RSI, MACD, Bollinger position, moving-average alignment, and volume. "
+        "A high value means those signals currently agree on a stronger setup."
+    ),
+    "fundamental": (
+        "Weighted blend of growth, profitability, financial health, and industry outlook. "
+        "A high value means the reported fundamentals look stronger."
+    ),
+    "valuation": (
+        "Maps estimated upside versus a blended fair value onto 0-100. "
+        "A high value means more estimated upside; an implausible cyclical reading is scored 50."
+    ),
+    "forecast": (
+        "Maps the 30-day expected return and the model's confidence onto 0-100. "
+        "A high value means the forecast points to a larger gain."
+    ),
+    "news": (
+        "Maps time-weighted FinBERT headline sentiment from -1 to 1 onto 0-100. "
+        "A high value means recent headlines lean positive."
+    ),
+    "growth": (
+        "Scores revenue growth and earnings growth together. "
+        "A high value means both are growing quickly."
+    ),
+    "profitability": (
+        "Scores gross margin, net margin, and return on equity. "
+        "A high value means margins and return on equity are stronger."
+    ),
+    "financial_health": (
+        "Scores debt-to-equity and the current ratio. "
+        "A high value means lower leverage and more liquidity."
+    ),
+    "industry_outlook": (
+        "Starts from the peer-group base score and adds a bonus when forward P/E is below trailing P/E. "
+        "A high value means that peer group is favored and earnings are expected to grow."
+    ),
+}
+
+_WEIGHT_LABELS = {
+    "technical": "Technical",
+    "fundamental": "Fundamental",
+    "valuation": "Valuation",
+    "prediction": "Forecast",
+    "volume": "Volume",
+    "news": "News",
+}
+
+
+def _status_badge(status: str) -> str:
+    """HTML badge for an entry status. The text is the existing status label.
+
+    Args:
+        status: Entry status key such as buy_now, watch, wait, or avoid.
+
+    Returns:
+        A span whose text is the status label and whose class marks the key.
+    """
+    key = str(status or "watch")
+    label = html.escape(get_status_label_cn(key))
+    safe_key = html.escape(key)
+    return f"<span class='status-badge status-{safe_key}'>{label}</span>"
+
+
+def _signed_html(value: float | None, digits: int = 1, *, prominent: bool = False) -> str:
+    """Color a signed percent by direction. None becomes an em dash.
+
+    Args:
+        value: Signed number, already in percent points.
+        digits: Decimal places.
+        prominent: When True, render at the metric-value size.
+
+    Returns:
+        HTML for the signed figure.
+    """
+    if value is None:
+        return "<span class='num'>—</span>"
+    klass = "pos" if value >= 0 else "neg"
+    size = " metric-value" if prominent else ""
+    return f"<span class='num{size} {klass}'>{value:+.{digits}f}%</span>"
+
+
+def _mono_numbers(text: str) -> str:
+    """Escape text and wrap numbers in a monospace span.
+
+    Args:
+        text: Plain text that may contain figures.
+
+    Returns:
+        HTML with each number inside a span of class ``num``.
+        Apostrophes stay intact because the text is escaped around the numbers.
+    """
+    # Escape text around the numbers. Escaping first would split entities such as &#x27;.
+    raw = str(text)
+    parts: list[str] = []
+    last = 0
+    for match in _NUMBER_RE.finditer(raw):
+        parts.append(html.escape(raw[last:match.start()]))
+        parts.append(f"<span class='num'>{html.escape(match.group(0))}</span>")
+        last = match.end()
+    parts.append(html.escape(raw[last:]))
+    return "".join(parts)
+
+
+def _caption(text: str, *, sidebar: bool = False, target: Any = None) -> None:
+    """Caption at the design-system size, with figures in IBM Plex Mono.
+
+    Args:
+        text: Caption copy.
+        sidebar: When True, render in the sidebar instead of the main column.
+        target: Optional Streamlit container. Overrides ``sidebar``.
+    """
+    if target is not None:
+        host = target
+    elif sidebar:
+        host = st.sidebar
+    else:
+        host = st
+    host.markdown(
+        f"<p class='caption'>{_mono_numbers(text)}</p>",
+        unsafe_allow_html=True,
+    )
+
+
+def _callout(text: str) -> None:
+    """Quiet note. Keeps red and green reserved for direction.
+
+    Args:
+        text: Note copy. Figures are rendered in IBM Plex Mono.
+    """
+    st.markdown(
+        f"<div class='callout'>{_mono_numbers(text)}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _score_bar(value: Any, label: str) -> None:
+    """Draw a flat 4px score bar. The printed score is the raw value.
+
+    Args:
+        value: Score, expected on a 0-100 scale.
+        label: Short name shown beside the score, for example ``Composite``.
+    """
+    number = _to_float_safe(value)
+    width = 0.0 if number is None else min(max(number, 0.0), 100.0)
+    shown = "—" if value is None else str(value)
+    st.markdown(
+        "<div class='score-block'>"
+        f"<div class='score-caption'>{html.escape(label)} "
+        f"<span class='num'>{html.escape(shown)}</span> / <span class='num'>100</span></div>"
+        "<div class='score-track'>"
+        f"<div class='score-fill' style='width:{width:.4f}%;'></div>"
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _cell_text(value: Any) -> str:
+    """Format one table cell without rounding a numeric value.
+
+    Args:
+        value: Cell value from a display dataframe.
+
+    Returns:
+        A plain string. Missing values become an em dash.
+    """
+    if value is None or isinstance(value, bool):
+        return "—" if value is None else str(value)
+    try:
+        if pd.isna(value):
+            return "—"
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str):
+        return value
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if number != number:
+        return "—"
+    return format(number, ".12g")
+
+
+def _looks_numeric(text: str) -> bool:
+    """Return True when a cell is a figure, price, or percent.
+
+    Args:
+        text: Display text for one cell.
+
+    Returns:
+        True when the cell parses as a number after currency and percent signs.
+    """
+    cleaned = text.strip().replace(",", "").replace("$", "").replace("%", "").replace("+", "")
+    if cleaned in {"", "—", "-", "–"}:
+        return False
+    try:
+        float(cleaned)
+    except ValueError:
+        return False
+    return True
+
+
+def _render_table(df: pd.DataFrame) -> None:
+    """Render a hairline table. Numeric columns are right-aligned in IBM Plex Mono.
+
+    Args:
+        df: Display dataframe. The index is not shown.
+    """
+    if df is None or df.empty:
+        return
+    columns = [str(col) for col in df.columns]
+    body: list[list[str]] = []
+    for row in df.itertuples(index=False):
+        body.append([_cell_text(value) for value in row])
+    numeric: list[bool] = []
+    for col_idx in range(len(columns)):
+        usable = [body[r][col_idx] for r in range(len(body)) if body[r][col_idx] not in {"", "—"}]
+        if not usable:
+            numeric.append(False)
+            continue
+        hits = sum(1 for value in usable if _looks_numeric(value))
+        numeric.append(hits / len(usable) >= 0.6)
+
+    header_cells = []
+    for name, is_num in zip(columns, numeric, strict=True):
+        klass = " class='numcol'" if is_num else ""
+        header_cells.append(f"<th{klass}>{html.escape(name)}</th>")
+    rows_html: list[str] = []
+    for row in body:
+        cells = []
+        for value, is_num in zip(row, numeric, strict=True):
+            klass = " class='numcol'" if is_num else ""
+            cells.append(f"<td{klass}>{html.escape(value)}</td>")
+        rows_html.append("<tr>" + "".join(cells) + "</tr>")
+    st.markdown(
+        "<div class='table-wrap'><table class='data-table'><thead><tr>"
+        + "".join(header_cells)
+        + "</tr></thead><tbody>"
+        + "".join(rows_html)
+        + "</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _weight_html() -> str:
+    """Format config.SCORE_WEIGHTS with percentages in IBM Plex Mono.
+
+    Returns:
+        HTML labels and percentages in config order, separated by middle dots.
+    """
+    parts = [
+        f"{html.escape(_WEIGHT_LABELS.get(key, key))} <span class='num'>{float(weight):.0%}</span>"
+        for key, weight in SCORE_WEIGHTS.items()
+    ]
+    return " · ".join(parts)
+
+
+def _page_footer(date_str: str | None) -> None:
+    """Quiet research disclaimer. The date is the snapshot date already on the page.
+
+    Args:
+        date_str: Snapshot date, or None when no snapshot is loaded.
+    """
+    shown = date_str or "the date shown"
+    st.markdown(
+        "<p class='page-footer'>"
+        + _mono_numbers(
+            f"Research project, not investment advice. Data is a snapshot taken on {shown}."
+        )
+        + "</p>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_sidebar(daily: dict[str, Any] | None) -> str:
+    """Sidebar navigation, a one-line description, and a short glossary.
+
+    Args:
+        daily: Latest daily snapshot, used only for the data date.
+
+    Returns:
+        The selected page id.
+    """
+    st.sidebar.markdown("<p class='card-title'>Pages</p>", unsafe_allow_html=True)
+    _caption("US equity AI-sector ranking of 60 listed companies.", sidebar=True)
+    page_options = ["Daily Picks", "Stock Deep Dive", "Universe Overview", "Strategy Performance"]
+    default_page = st.session_state.get("page", "Daily Picks")
+    page = st.sidebar.radio(
+        "Page",
+        page_options,
+        index=page_options.index(default_page) if default_page in page_options else 0,
+    )
+    st.session_state["page"] = page
+    with st.sidebar.expander("How to read this"):
+        st.markdown(
+            "<p class='body-line'>"
+            + _mono_numbers(
+                "Every score runs from 0 to 100. A higher score is a stronger reading "
+                "on that dimension, not a predicted return."
+            )
+            + "</p>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<p class='body-line'><strong>Composite weights.</strong> {_weight_html()}</p>",
+            unsafe_allow_html=True,
+        )
+        for label, key in (
+            ("Technical", "technical"),
+            ("Fundamental", "fundamental"),
+            ("Valuation", "valuation"),
+            ("Forecast", "forecast"),
+        ):
+            st.markdown(
+                f"<p class='body-line'><strong>{label}.</strong> {_mono_numbers(_SCORE_HELP[key])}</p>",
+                unsafe_allow_html=True,
+            )
+        st.markdown(
+            "<p class='body-line'><strong>Volume.</strong> "
+            + _mono_numbers(
+                "Compares today's volume with its recent average and maps that ratio onto 0-100. "
+                "A high value means heavier-than-usual trading. This weight is inside the composite; "
+                "the pick card does not store it as its own number."
+            )
+            + "</p>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<p class='body-line'><strong>News.</strong> {_mono_numbers(_SCORE_HELP['news'])}</p>",
+            unsafe_allow_html=True,
+        )
+    date_shown = daily.get("date", "-") if isinstance(daily, dict) else "-"
+    _caption(f"Data date: {date_shown}", sidebar=True)
+    return page
+
+
 def render_daily_page(daily: dict[str, Any]) -> None:
-    """頁面一：每日精選。"""
-    st.title("美股分析 Dashboard")
+    """Page 1: daily picks."""
+    st.title("Daily picks")
     date_str = daily.get("date", datetime.now().strftime("%Y-%m-%d"))
     m = daily.get("market_overview", {})
     spy_chg = m.get("spy_change_pct")
     spy_price = m.get("spy_price")
-    spy_txt = f"SPY {spy_price} ({spy_chg:+.2f}%)" if spy_price is not None and spy_chg is not None else "SPY N/A"
-    st.caption(
-        f"日期：{date_str} ｜ {spy_txt} ｜ 分析 {m.get('total_analyzed', 0)} 檔，通過篩選 {m.get('passed_filter', 0)} 檔"
+    if spy_price is None or spy_chg is None:
+        spy_price, spy_chg = get_cached_spy_quote()
+    if spy_price is not None and spy_chg is not None:
+        spy_txt = (
+            f"SPY <span class='num'>{float(spy_price):.2f}</span> "
+            f"({_signed_html(float(spy_chg), digits=2)})"
+        )
+    else:
+        spy_txt = "SPY N/A"
+    analyzed = int(m.get("total_analyzed", 0) or 0)
+    passed = int(m.get("passed_filter", 0) or 0)
+    st.markdown(
+        f"<p class='caption'>Date: <span class='num'>{html.escape(str(date_str))}</span> | {spy_txt} | "
+        f"analyzed <span class='num'>{analyzed}</span>, passed filter <span class='num'>{passed}</span></p>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p class='caption'>Ranks <span class='num'>60</span> US-listed AI and technology companies "
+        "each trading day and surfaces the top <span class='num'>3</span>. "
+        "Every score is <span class='num'>0</span>-<span class='num'>100</span>. "
+        "The composite is a weighted blend of these dimensions: "
+        + _weight_html()
+        + ".</p>",
+        unsafe_allow_html=True,
     )
 
     picks = daily.get("picks", [])[:3]
-    cols = st.columns(3)
-    for i in range(3):
-        with cols[i]:
-            if i >= len(picks):
-                st.info("尚無資料")
-                continue
-            p = picks[i]
-            name = p.get("name", "")
-            ticker = p.get("ticker", "")
-            curr = p.get("current_price")
-            pred_ret = p.get("prediction", {}).get("expected_return_pct")
-            st.subheader(f"{ticker} {name}")
-            if curr is not None:
-                color = pct_color(pred_ret if isinstance(pred_ret, (int, float)) else None)
-                st.markdown(f"<h3 style='color:{color};'>${float(curr):.2f}</h3>", unsafe_allow_html=True)
-            st.progress(min(max(int(float(p.get("composite_score", 0))), 0), 100), text=f"綜合評分 {p.get('composite_score')}")
-
-            news = p.get("news", {}) if isinstance(p.get("news"), dict) else {}
-            sent_label = str(news.get("sentiment_label", "無新聞"))
-            news_count = int(news.get("news_count", 0) or 0)
-            sent_color = get_sentiment_color(sent_label)
+    if not picks:
+        _callout("No data yet")
+    for i, p in enumerate(picks):
+        name = p.get("name", "")
+        ticker = p.get("ticker", "")
+        curr = p.get("current_price")
+        pred_ret = _to_float_safe(p.get("prediction", {}).get("expected_return_pct"))
+        news = p.get("news", {}) if isinstance(p.get("news"), dict) else {}
+        sent_label = str(news.get("sentiment_label", "No News"))
+        news_count = int(news.get("news_count", 0) or 0)
+        sent_color = get_sentiment_color(sent_label)
+        with st.container(border=True):
+            st.markdown(f"### {html.escape(str(ticker))} {html.escape(str(name))}")
+            price_txt = f"${float(curr):.2f}" if curr is not None else "—"
             st.markdown(
-                f"<div style='color:{sent_color};font-weight:600;margin:6px 0 8px 0;'>"
-                f"📰 新聞面：{sent_label}（共 {news_count} 則）</div>",
+                "<p class='price-line'><span class='metric-label'>Price</span>"
+                f"<span class='metric-value'>{html.escape(price_txt)}</span>"
+                "<span class='metric-label'>30-day forecast</span>"
+                f"{_signed_html(pred_ret, prominent=True)}</p>",
+                unsafe_allow_html=True,
+            )
+            _score_bar(p.get("composite_score"), "Composite")
+
+            s1, s2, s3, s4, s5 = st.columns(5)
+            s1.metric("Technical", p.get("technical", {}).get("total_score"), help=_SCORE_HELP["technical"])
+            s2.metric("Fundamental", p.get("fundamental", {}).get("total_score"), help=_SCORE_HELP["fundamental"])
+            s3.metric("Valuation", p.get("valuation", {}).get("score"), help=_SCORE_HELP["valuation"])
+            s4.metric("Forecast", p.get("prediction", {}).get("score"), help=_SCORE_HELP["forecast"])
+            s5.metric("News", news.get("score"), help=_SCORE_HELP["news"])
+            card_val = p.get("valuation") if isinstance(p.get("valuation"), dict) else {}
+            if card_val.get("valuation_reliable") is False:
+                _callout(
+                    str(card_val.get("valuation_reason") or "").strip()
+                    or "Trailing P/E implies an implausible fair value; earnings are likely at a cyclical peak or trough"
+                )
+
+            st.markdown(
+                "<p class='body-line'>News sentiment: "
+                f"<span style='color:{sent_color};font-weight:500;'>{html.escape(sent_label)}</span>"
+                f" · <span class='num'>{news_count}</span> articles</p>",
                 unsafe_allow_html=True,
             )
 
-            c1, c2 = st.columns(2)
-            c3, c4 = st.columns(2)
-            c1.metric("技術", p.get("technical", {}).get("total_score"))
-            c2.metric("基本", p.get("fundamental", {}).get("total_score"))
-            c3.metric("估值", p.get("valuation", {}).get("score"))
-            c4.metric("預測", p.get("prediction", {}).get("score"))
+            reasons = p.get("pick_reasons") or []
+            if reasons:
+                st.markdown("<p class='card-title'>Reasons</p>", unsafe_allow_html=True)
+                items = "".join(f"<li>{_mono_numbers(str(reason))}</li>" for reason in reasons)
+                st.markdown(f"<ul class='reason-list'>{items}</ul>", unsafe_allow_html=True)
+            else:
+                _caption("No reasons recorded")
+
+            risks = p.get("risk_factors", [])
+            if risks:
+                _callout("; ".join(str(item) for item in risks))
 
             entry = p.get("entry_price") if isinstance(p.get("entry_price"), dict) else {}
             if entry:
-                status = entry.get("current_status") or "watch"
-                emoji = get_status_emoji(str(status))
-                label = get_status_label_cn(str(status))
-                st.markdown(f"### 🎯 進場建議  {emoji} **{label}**")
+                status = str(entry.get("current_status") or "watch")
+                st.markdown(f"Entry {_status_badge(status)}", unsafe_allow_html=True)
                 ep = entry.get("entry_prices") or {}
                 dist = entry.get("distance") or {}
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric(
-                        "保守進場",
-                        f"${float(ep.get('conservative') or 0):.2f}",
-                        delta=f"{float(dist.get('to_conservative_pct') or 0):+.1f}%",
-                        delta_color="inverse",
+                _render_table(
+                    pd.DataFrame(
+                        {
+                            "Level": ["Conservative", "Standard", "Aggressive"],
+                            "Price": [
+                                f"${float(ep.get('conservative') or 0):.2f}",
+                                f"${float(ep.get('standard') or 0):.2f}",
+                                f"${float(ep.get('aggressive') or 0):.2f}",
+                            ],
+                            "Distance": [
+                                f"{float(dist.get('to_conservative_pct') or 0):+.1f}%",
+                                f"{float(dist.get('to_standard_pct') or 0):+.1f}%",
+                                f"{float(dist.get('to_aggressive_pct') or 0):+.1f}%",
+                            ],
+                        }
                     )
-                with col2:
-                    st.metric(
-                        "標準進場",
-                        f"${float(ep.get('standard') or 0):.2f}",
-                        delta=f"{float(dist.get('to_standard_pct') or 0):+.1f}%",
-                        delta_color="inverse",
-                    )
-                with col3:
-                    st.metric(
-                        "積極進場",
-                        f"${float(ep.get('aggressive') or 0):.2f}",
-                        delta=f"{float(dist.get('to_aggressive_pct') or 0):+.1f}%",
-                        delta_color="inverse",
-                    )
-                st.info(entry.get("reasoning") or "")
+                )
+                _callout(str(entry.get("reasoning") or ""))
             else:
-                st.caption("尚無進場價分析（請重新執行 daily_picker 產生報告）")
-
-            with st.expander("選股理由"):
-                for r in p.get("pick_reasons", []):
-                    st.markdown(f"- {r}")
+                _caption("No entry-price analysis yet (rerun daily_picker to refresh the report)")
 
             top_news = news.get("top_headlines", []) if isinstance(news.get("top_headlines"), list) else []
-            with st.expander(f"📰 查看相關新聞 ({news_count} 則)"):
+            with st.expander(f"Related news ({news_count})"):
                 sum_raw = news.get("summary")
                 if sum_raw:
                     s = str(sum_raw)
                     summary_preview = s[:200]
                     if len(s) > 200:
                         summary_preview += "..."
-                    st.caption(summary_preview)
+                    _caption(summary_preview)
                     st.markdown("---")
                 if not top_news:
-                    st.caption("暫無相關新聞")
+                    _caption("No related news yet")
                 for one in top_news[:3]:
                     title = _truncate_text(str(one.get("title", "")), 80)
-                    sent = str(one.get("sentiment_cn", one.get("sentiment", "中性")))
+                    sent = str(one.get("sentiment_cn", one.get("sentiment", "Neutral")))
                     conf = float(one.get("confidence", 0) or 0)
                     link = str(one.get("link", "") or "")
-                    st.markdown(f"**{title}**")
-                    st.caption(f"{sent} · 信心度 {conf:.2f}")
+                    st.markdown(f"<p class='body-line'><strong>{html.escape(title)}</strong></p>", unsafe_allow_html=True)
+                    _caption(f"{sent} · confidence {conf:.2f}")
                     if link:
-                        st.link_button("📖 查看原文", link, use_container_width=False)
+                        st.link_button("Read original", link, use_container_width=False)
 
-            risks = p.get("risk_factors", [])
-            if risks:
-                st.warning("；".join(risks))
-
-            if st.button("查看詳細分析", key=f"detail_{ticker}", use_container_width=True):
+            if st.button("View full analysis", key=f"detail_{ticker}"):
                 st.session_state["selected_ticker"] = ticker
-                st.session_state["page"] = "🔬 個股深度分析"
+                st.session_state["page"] = "Stock Deep Dive"
                 st.rerun()
+        if i < len(picks) - 1:
+            st.divider()
 
 
 def build_technical_figure(df: pd.DataFrame) -> go.Figure:
-    """技術面多子圖。"""
+    """Multi-panel technical chart."""
     fig = make_subplots(
         rows=4,
         cols=1,
@@ -475,7 +1242,7 @@ def build_technical_figure(df: pd.DataFrame) -> go.Figure:
         vertical_spacing=0.03,
         row_heights=[0.52, 0.16, 0.16, 0.16],
     )
-    inc_color, dec_color = "#00C853", "#FF5252"
+    inc_color, dec_color = POSITIVE, NEGATIVE
     fig.add_trace(
         go.Candlestick(
             x=df.index,
@@ -485,43 +1252,58 @@ def build_technical_figure(df: pd.DataFrame) -> go.Figure:
             close=df["Close"],
             increasing_line_color=inc_color,
             decreasing_line_color=dec_color,
-            name="K線",
+            increasing_fillcolor=inc_color,
+            decreasing_fillcolor=dec_color,
+            name="Candles",
         ),
         row=1,
         col=1,
     )
-    for col, c in [("MA5", "#FFD166"), ("MA20", "#F4A261"), ("MA60", "#9B5DE5"), ("MA200", "#00BBF9")]:
+    for col, c, dash in (
+        ("MA5", CHART_COLORS[0], "solid"),
+        ("MA20", CHART_COLORS[1], "solid"),
+        ("MA60", CHART_COLORS[2], "dash"),
+        ("MA200", CHART_COLORS[0], "dot"),
+    ):
         if col in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df[col], mode="lines", name=col, line=dict(color=c, width=1.6)), row=1, col=1)
-    for col, c in [("BB_UPPER", "#8ecae6"), ("BB_MIDDLE", "#adb5bd"), ("BB_LOWER", "#8ecae6")]:
+            fig.add_trace(
+                go.Scatter(x=df.index, y=df[col], mode="lines", name=col, line=dict(color=c, width=1.6, dash=dash)),
+                row=1,
+                col=1,
+            )
+    for col, c in (
+        ("BB_UPPER", CHART_COLORS[1]),
+        ("BB_MIDDLE", CHART_COLORS[2]),
+        ("BB_LOWER", CHART_COLORS[1]),
+    ):
         if col in df.columns:
             fig.add_trace(go.Scatter(x=df.index, y=df[col], mode="lines", name=col, line=dict(color=c, width=1, dash="dot")), row=1, col=1)
 
     if "RSI" in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], mode="lines", name="RSI", line=dict(color="#00b4d8")), row=2, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="#ef476f", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="#06d6a0", row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], mode="lines", name="RSI", line=dict(color=CHART_COLORS[0])), row=2, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color=TEXT_DIM, row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color=TEXT_DIM, row=2, col=1)
 
     if {"MACD_DIF", "MACD_DEA", "MACD_HIST"}.issubset(df.columns):
-        fig.add_trace(go.Scatter(x=df.index, y=df["MACD_DIF"], mode="lines", name="DIF", line=dict(color="#ffd166")), row=3, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["MACD_DEA"], mode="lines", name="DEA", line=dict(color="#118ab2")), row=3, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df["MACD_DIF"], mode="lines", name="DIF", line=dict(color=CHART_COLORS[0])), row=3, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df["MACD_DEA"], mode="lines", name="DEA", line=dict(color=CHART_COLORS[1])), row=3, col=1)
         colors = [inc_color if x >= 0 else dec_color for x in df["MACD_HIST"].fillna(0)]
         fig.add_trace(go.Bar(x=df.index, y=df["MACD_HIST"], name="HIST", marker_color=colors, opacity=0.5), row=3, col=1)
 
     vol_colors = [inc_color if c >= o else dec_color for o, c in zip(df["Open"], df["Close"], strict=False)]
     fig.add_trace(go.Bar(x=df.index, y=df["Volume"], marker_color=vol_colors, name="Volume"), row=4, col=1)
-    fig.update_layout(template="plotly_dark", height=900, xaxis_rangeslider_visible=False, legend_orientation="h")
+    _style_figure(fig, height=900, xaxis_rangeslider_visible=False, legend_orientation="h")
     return fig
 
 
 def _render_company_profile(ticker: str) -> None:
-    """公司簡介分頁：讀取 profile 並以卡片＋分區塊呈現。"""
+    """Company-profile tab: load the profile and render it as cards and sections."""
     sym = str(ticker).strip().upper()
     profile = load_profile(sym)
 
     if not _profile_looks_valid(profile) or not isinstance(profile, dict):
-        st.warning("公司簡介資料載入失敗，請稍後再試或手動重新整理")
-        if st.button("🔄 重新抓取簡介", key=f"force_profile_refresh_{sym}"):
+        _callout("Company profile failed to load. Try again later or refresh it manually.")
+        if st.button("Refresh profile", key=f"force_profile_refresh_{sym}"):
             get_profile(sym, force_refresh=True)
             load_profile.clear()
             st.rerun()
@@ -539,27 +1321,20 @@ def _render_company_profile(ticker: str) -> None:
         else:
             n = float(emp)
             if n == int(n) and 0 <= n < 1e12:
-                emp_str = f"{int(n):,} 人"
+                emp_str = f"{int(n):,}"
             else:
-                emp_str = f"{n:,.0f} 人"
+                emp_str = f"{n:,.0f}"
     except (TypeError, ValueError):
         emp_str = str(emp) if emp is not None else "—"
     desc_s = profile.get("description_short") or ""
     desc_s_safe = html.escape(str(desc_s))
 
     st.markdown(
-        f"""
-<div style="
-    background: linear-gradient(135deg, rgba(59,130,246,0.08), rgba(147,51,234,0.08));
-    border-radius: 12px;
-    padding: 24px;
-    margin-bottom: 20px;
-">
-    <h2 style="margin:0 0 8px 0;color:#f3f4f6;">{name} <span style="color:#9ca3af;font-size:0.6em">({t_disp})</span></h2>
-    <p style="color:#9ca3af;font-size:14px;margin:0 0 12px 0;">{sec} · {indu} · {ctry} · 員工 {html.escape(emp_str)}</p>
-    <p style="color:#d1d5db;font-size:16px;line-height:1.7;margin:0;">{desc_s_safe or "暫無一句話簡介。"}</p>
-</div>
-""",
+        "<div class='card'>"
+        f"<h2 class='card-title'>{name} <span class='dim'>({t_disp})</span></h2>"
+        f"<p class='caption'>{sec} · {indu} · {ctry} · Employees <span class='num'>{html.escape(emp_str)}</span></p>"
+        f"<p class='body-line'>{desc_s_safe or 'No one-line summary yet.'}</p>"
+        "</div>",
         unsafe_allow_html=True,
     )
 
@@ -567,62 +1342,63 @@ def _render_company_profile(ticker: str) -> None:
         usd_m, twd_m = _format_mcap_usd_twd(profile.get("market_cap"))
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown("##### 💰 市值")
             st.markdown(
-                f"<p style='margin:0;font-size:15px;color:#e5e7eb'>{html.escape(usd_m)}<br><span style='color:#9ca3af;font-size:13px'>{html.escape(twd_m)}</span></p>",
+                "<p class='metric-label'>Market cap</p>"
+                f"<p class='metric-value'>{html.escape(usd_m)}</p>"
+                f"<p class='caption'>{_mono_numbers(twd_m)}</p>",
                 unsafe_allow_html=True,
             )
         with c2:
-            st.markdown("##### 👥 員工數")
             st.markdown(
-                f"<p style='margin:0;font-size:15px;color:#e5e7eb'>{html.escape(emp_str)}</p>", unsafe_allow_html=True
+                "<p class='metric-label'>Employees</p>"
+                f"<p class='metric-value'>{html.escape(emp_str)}</p>",
+                unsafe_allow_html=True,
             )
         with c3:
-            st.markdown("##### 🌏 總部／國家")
             st.markdown(
-                f"<p style='margin:0;font-size:15px;color:#e5e7eb'>{ctry}</p>", unsafe_allow_html=True
+                "<p class='metric-label'>Headquarters / country</p>"
+                f"<p class='body-line'>{ctry}</p>",
+                unsafe_allow_html=True,
             )
 
     st.markdown("---")
     with st.container(border=True):
-        st.markdown("### 詳細介紹")
+        st.markdown("### Full description")
         st.markdown(
-            f"""
-    <div style="font-size:15px; line-height:1.8; color:#e5e7eb;">
-{html.escape(str(profile.get("description_long") or "暫無詳細介紹。")).replace(chr(10), "<br/>")}
-    </div>
-    """,
+            "<div class='body-line'>"
+            + html.escape(str(profile.get("description_long") or "No full description yet.")).replace(chr(10), "<br/>")
+            + "</div>",
             unsafe_allow_html=True,
         )
 
     st.markdown("---")
     with st.container(border=True):
-        st.markdown("#### 主要業務")
+        st.markdown("#### Business")
         left, right = st.columns(2)
         with left:
-            st.caption("業務／營收分部")
+            _caption("Segments / revenue")
             segs = profile.get("business_segments") or []
             if not isinstance(segs, list) or not segs:
-                st.caption("—")
+                _caption("—")
             else:
                 for s in segs:
                     st.markdown(f"- {html.escape(str(s))}", unsafe_allow_html=True)
         with right:
-            st.caption("主要產品／服務")
+            _caption("Key products / services")
             prods = profile.get("key_products") or []
             if not isinstance(prods, list) or not prods:
-                st.caption("—")
+                _caption("—")
             else:
                 for p0 in prods:
                     st.markdown(f"- {html.escape(str(p0))}", unsafe_allow_html=True)
 
     st.markdown("---")
     with st.container(border=True):
-        st.markdown("#### 主要競爭者")
-        st.caption("可點選標籤，若可對應至本系統清單內代號，將導向該個股深度分析")
+        st.markdown("#### Competitors")
+        _caption("Select a tag. If it maps to a ticker in this universe, the page switches to that stock.")
         competitors = [str(x) for x in (profile.get("competitors") or [])]
         if not competitors:
-            st.caption("暫無資料")
+            _caption("No data yet")
         elif hasattr(st, "pills"):
             pkey = f"competitor_pill_{sym}"
 
@@ -636,7 +1412,7 @@ def _render_company_profile(ticker: str) -> None:
                     st.rerun()
 
             st.pills(
-                "點以下標籤可切換個股（若可對應本清單內代號）",
+                "Select a tag to switch stocks (when it maps to a ticker in this universe)",
                 options=competitors,
                 on_change=_on_pill,
                 key=pkey,
@@ -652,11 +1428,11 @@ def _render_company_profile(ticker: str) -> None:
                             st.session_state["selected_ticker"] = t_nav
                             st.rerun()
                     else:
-                        st.caption(_truncate_text(c, 24))
+                        _caption(_truncate_text(c, 24))
 
     st.markdown("---")
     with st.container(border=True):
-        st.markdown("### 📚 延伸閱讀")
+        st.markdown("### Further reading")
         articles: list[dict[str, Any]] = (
             profile.get("articles") if isinstance(profile.get("articles"), list) else []
         )
@@ -676,30 +1452,30 @@ def _render_company_profile(ticker: str) -> None:
                 continue
             st.markdown(f"**{ARTICLE_TYPE_LABEL.get(t, t)}**")
             for a in items:
-                title = str(a.get("title") or "連結")
+                title = str(a.get("title") or "Link")
                 url = str(a.get("url") or "").strip()
                 src = str(a.get("source") or "")
                 if url and url.startswith("http"):
                     t_short = _truncate_text(title, 100)
                     st.link_button(
-                        f"🔗 {t_short} · {src or '—'}",
+                        f"{t_short} · {src or '—'}",
                         url,
                         use_container_width=False,
                     )
                 else:
-                    st.caption(f"{title}（無效網址）")
+                    _caption(f"{title} (invalid URL)")
 
     _fa = str(profile.get("fetched_at") or "—")
     _src = ", ".join(str(s) for s in (profile.get("sources_used") or [])) or "—"
-    st.caption(f"資料更新時間：{_fa} · 來源：{_src}")
+    _caption(f"Updated: {_fa} · Sources: {_src}")
 
 
 def render_deep_page(daily: dict[str, Any]) -> None:
-    """頁面二：個股深度分析。"""
-    st.title("🔬 個股深度分析")
+    """Page 2: single-stock analysis."""
+    st.title("Stock deep dive")
     default_ticker = st.session_state.get("selected_ticker", TICKER_LIST[0])
     idx = TICKER_LIST.index(default_ticker) if default_ticker in TICKER_LIST else 0
-    ticker = st.selectbox("選擇股票", TICKER_LIST, index=idx)
+    ticker = st.selectbox("Select a stock", TICKER_LIST, index=idx)
     st.session_state["selected_ticker"] = ticker
 
     bundle = get_stock_bundle(ticker)
@@ -714,7 +1490,7 @@ def render_deep_page(daily: dict[str, Any]) -> None:
         realtime_used = True
 
     tab_profile, tab1, tab2, tab3, tab4 = st.tabs(
-        ["🏢 公司簡介", "📈 技術面", "💼 基本面", "🔮 股價預測", "📰 新聞情緒"]
+        ["Company profile", "Technicals", "Fundamentals", "Price forecast", "News sentiment"]
     )
 
     with tab_profile:
@@ -726,40 +1502,49 @@ def render_deep_page(daily: dict[str, Any]) -> None:
         sig = tech.get("signals", {})
         ind_df = pd.DataFrame(
             [
-                {"指標": "RSI", "數值": cv.get("rsi"), "信號": sig.get("rsi")},
-                {"指標": "MACD_HIST", "數值": cv.get("macd_hist"), "信號": sig.get("macd")},
-                {"指標": "KD_K", "數值": cv.get("kd_k"), "信號": ""},
-                {"指標": "KD_D", "數值": cv.get("kd_d"), "信號": ""},
-                {"指標": "ADX", "數值": cv.get("adx"), "信號": sig.get("ma_trend")},
-                {"指標": "ATR", "數值": cv.get("atr"), "信號": ""},
+                {"Indicator": "RSI", "Value": cv.get("rsi"), "Signal": sig.get("rsi")},
+                {"Indicator": "MACD_HIST", "Value": cv.get("macd_hist"), "Signal": sig.get("macd")},
+                {"Indicator": "KD_K", "Value": cv.get("kd_k"), "Signal": ""},
+                {"Indicator": "KD_D", "Value": cv.get("kd_d"), "Signal": ""},
+                {"Indicator": "ADX", "Value": cv.get("adx"), "Signal": sig.get("ma_trend")},
+                {"Indicator": "ATR", "Value": cv.get("atr"), "Signal": ""},
             ]
         )
-        st.dataframe(ind_df, use_container_width=True, hide_index=True)
+        _render_table(ind_df)
+        st.markdown("### Technical score")
         gauge = go.Figure(
             go.Indicator(
                 mode="gauge+number",
                 value=float(tech.get("total_score", 0)),
-                title={"text": "技術總分"},
-                gauge={"axis": {"range": [0, 100]}, "bar": {"color": "#4cc9f0"}},
+                number={"font": {"family": "IBM Plex Mono, monospace", "size": 22, "color": TEXT}},
+                gauge={
+                    "axis": {
+                        "range": [0, 100],
+                        "tickfont": {"family": "IBM Plex Sans, sans-serif", "size": 12, "color": TEXT_DIM},
+                    },
+                    "bar": {"color": ACCENT},
+                    "bgcolor": BAR_TRACK,
+                },
             )
         )
-        gauge.update_layout(template="plotly_dark", height=260)
+        _style_figure(gauge, height=220)
         st.plotly_chart(gauge, use_container_width=True)
+        _caption(_SCORE_HELP["technical"])
 
     with tab2:
         sub = fund.get("sub_scores", {})
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("成長", sub.get("growth"))
-        c2.metric("獲利", sub.get("profitability"))
-        c3.metric("財務健康", sub.get("financial_health"))
-        c4.metric("產業前景", sub.get("industry_outlook"))
+        c1.metric("Growth", sub.get("growth"), help=_SCORE_HELP["growth"])
+        c2.metric("Profitability", sub.get("profitability"), help=_SCORE_HELP["profitability"])
+        c3.metric("Financial health", sub.get("financial_health"), help=_SCORE_HELP["financial_health"])
+        c4.metric("Industry outlook", sub.get("industry_outlook"), help=_SCORE_HELP["industry_outlook"])
 
         avg = get_sector_fundamental_avg(ticker)
         cats = ["growth", "profitability", "financial_health", "industry_outlook"]
         radar = go.Figure()
         radar.add_trace(go.Scatterpolar(r=[sub.get(k, 0) for k in cats], theta=cats, fill="toself", name=ticker))
-        radar.add_trace(go.Scatterpolar(r=[avg.get(k, 0) for k in cats], theta=cats, fill="toself", name="同產業平均"))
-        radar.update_layout(template="plotly_dark", polar=dict(radialaxis=dict(visible=True, range=[0, 100])), height=420)
+        radar.add_trace(go.Scatterpolar(r=[avg.get(k, 0) for k in cats], theta=cats, fill="toself", name="Sector average"))
+        _style_figure(radar, polar=dict(radialaxis=dict(visible=True, range=[0, 100])), height=420)
         st.plotly_chart(radar, use_container_width=True)
 
         fin_df = pd.DataFrame(
@@ -771,12 +1556,20 @@ def render_deep_page(daily: dict[str, Any]) -> None:
                 ["debtToEquity", info.get("debtToEquity")],
                 ["currentRatio", info.get("currentRatio")],
             ],
-            columns=["指標", "數值"],
+            columns=["Indicator", "Value"],
         )
-        st.dataframe(fin_df, use_container_width=True, hide_index=True)
+        _render_table(fin_df)
         a1, a2 = st.columns(2)
-        a1.metric("分析師評等 recommendationMean", info.get("recommendationMean"))
-        a2.metric("分析師目標價 targetMeanPrice", info.get("targetMeanPrice"))
+        a1.metric(
+            "Analyst rating (recommendationMean)",
+            info.get("recommendationMean"),
+            help="Yahoo Finance recommendationMean, shown as returned. This dashboard does not rescale it.",
+        )
+        a2.metric(
+            "Analyst target (targetMeanPrice)",
+            info.get("targetMeanPrice"),
+            help="Yahoo Finance targetMeanPrice, shown as returned. This dashboard does not rescale it.",
+        )
 
     with tab3:
         current_price = float(raw.get("current_price") or raw["price_history"]["Close"].iloc[-1])
@@ -786,35 +1579,57 @@ def render_deep_page(daily: dict[str, Any]) -> None:
         low = float(pred.get("predicted_low"))
         high = float(pred.get("predicted_high"))
         c1, c2, c3 = st.columns(3)
-        c1.metric("當前股價", f"${current_price:.2f}")
-        c2.metric("合理股價", f"${fair_price:.2f}", f"{fair_diff:+.2f}%")
-        c3.metric("30天後預測", f"${p30:.2f}", f"[{low:.2f}, {high:.2f}]")
+        c1.metric(
+            "Current price",
+            f"${current_price:.2f}",
+            help="Latest price used by the valuation and the 30-day forecast.",
+        )
+        c2.metric(
+            "Fair value",
+            f"${fair_price:.2f}",
+            f"{fair_diff:+.2f}%",
+            help=_SCORE_HELP["valuation"],
+        )
+        c3.metric(
+            "30-day forecast",
+            f"${p30:.2f}",
+            help=_SCORE_HELP["forecast"],
+        )
+        _caption(f"[{low:.2f}, {high:.2f}]", target=c3)
+        if val.get("valuation_reliable") is False:
+            _callout(
+                str(val.get("valuation_reason") or "").strip()
+                or "Trailing P/E implies an implausible fair value; earnings are likely at a cyclical peak or trough"
+            )
 
         entry = compute_entry_analysis(ticker)
         if entry:
-            st.markdown("### 📋 分批建倉計畫")
+            st.markdown("### Staged entry plan")
             batch_plan = entry.get("batch_plan") if isinstance(entry.get("batch_plan"), list) else []
             for i, batch in enumerate(batch_plan, 1):
                 if not isinstance(batch, dict):
                     continue
                 cols_bp = st.columns([1, 2, 3])
                 with cols_bp[0]:
-                    st.markdown(f"**第 {i} 批**")
+                    st.markdown(f"<p class='body-line'><strong>Tranche <span class='num'>{i}</span></strong></p>", unsafe_allow_html=True)
                 with cols_bp[1]:
                     px = _to_float_safe(batch.get("price")) or 0.0
                     ap = batch.get("allocation_pct", "")
-                    st.markdown(f"${px:.2f} ({ap}%)")
+                    st.markdown(
+                        f"<p class='body-line'><span class='num'>${px:.2f}</span> (<span class='num'>{html.escape(str(ap))}%</span>)</p>",
+                        unsafe_allow_html=True,
+                    )
                 with cols_bp[2]:
-                    st.caption(str(batch.get("condition") or ""))
+                    _caption(str(batch.get("condition") or ""))
             rr = _to_float_safe(entry.get("risk_reward_ratio")) or 0.0
             if rr > 0:
                 st.metric(
-                    "風險報酬比",
+                    "Risk / reward",
                     f"{rr:.2f} : 1",
-                    help="獲利空間 vs 虧損空間，>=2 為良好",
+                    help="Upside versus downside. 2 or higher is favorable.",
                 )
         else:
-            st.caption("進場價／分批計畫暫無法計算")
+            _caption("Entry prices and the staged plan could not be calculated")
 
         hist = raw["price_history"].copy().tail(365)
         pred_dates = pd.to_datetime(pred["prediction_dates"])
@@ -822,8 +1637,8 @@ def render_deep_page(daily: dict[str, Any]) -> None:
         pred_up = pd.Series(pred["prediction_upper"], index=pred_dates)
         pred_lo = pd.Series(pred["prediction_lower"], index=pred_dates)
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=hist.index, y=hist["Close"], mode="lines", name="歷史收盤", line=dict(color="#4cc9f0", width=2)))
-        fig.add_trace(go.Scatter(x=pred_line.index, y=pred_line.values, mode="lines", name="30天預測", line=dict(color="#ffd166", dash="dash", width=2)))
+        fig.add_trace(go.Scatter(x=hist.index, y=hist["Close"], mode="lines", name="Close", line=dict(color=CHART_COLORS[0], width=2)))
+        fig.add_trace(go.Scatter(x=pred_line.index, y=pred_line.values, mode="lines", name="30-day forecast", line=dict(color=CHART_COLORS[1], dash="dash", width=2)))
         fig.add_trace(go.Scatter(x=pred_up.index, y=pred_up.values, mode="lines", line=dict(width=0), showlegend=False))
         fig.add_trace(
             go.Scatter(
@@ -831,32 +1646,32 @@ def render_deep_page(daily: dict[str, Any]) -> None:
                 y=pred_lo.values,
                 mode="lines",
                 fill="tonexty",
-                fillcolor="rgba(76,201,240,0.2)",
+                fillcolor="rgba(21,56,92,0.12)",
                 line=dict(width=0),
-                name="95%信心區間",
+                name="95% interval",
             )
         )
-        fig.add_hline(y=fair_price, line_dash="dot", line_color="#06d6a0", annotation_text="合理股價")
+        fig.add_hline(y=fair_price, line_dash="dot", line_color=CHART_COLORS[2], annotation_text="Fair value")
         if info.get("targetMeanPrice") is not None:
-            fig.add_hline(y=float(info.get("targetMeanPrice")), line_dash="dot", line_color="#f4a261", annotation_text="分析師目標")
-        fig.update_layout(template="plotly_dark", height=500)
+            fig.add_hline(y=float(info.get("targetMeanPrice")), line_dash="dash", line_color=CHART_COLORS[1], annotation_text="Analyst target")
+        _style_figure(fig, height=500)
         st.plotly_chart(fig, use_container_width=True)
 
         methods = val.get("methods", {})
         table = pd.DataFrame(
             [
-                ["PE法", methods.get("pe_method", {}).get("fair_price"), methods.get("pe_method", {}).get("weight")],
-                ["PEG法", methods.get("peg_method", {}).get("fair_price"), methods.get("peg_method", {}).get("weight")],
-                ["分析師目標", methods.get("analyst_target", {}).get("fair_price"), methods.get("analyst_target", {}).get("weight")],
+                ["P/E", methods.get("pe_method", {}).get("fair_price"), methods.get("pe_method", {}).get("weight")],
+                ["PEG", methods.get("peg_method", {}).get("fair_price"), methods.get("peg_method", {}).get("weight")],
+                ["Analyst target", methods.get("analyst_target", {}).get("fair_price"), methods.get("analyst_target", {}).get("weight")],
             ],
-            columns=["方法", "估值", "權重"],
+            columns=["Method", "Valuation", "Weight"],
         )
-        st.dataframe(table, use_container_width=True, hide_index=True)
-        st.caption("本預測僅供參考，不構成投資建議")
+        _render_table(table)
+        _caption("This forecast is for reference only and is not investment advice")
 
     with tab4:
         news = pick_news or {}
-        sentiment_label = str(news.get("sentiment_label", "無新聞"))
+        sentiment_label = str(news.get("sentiment_label", "No News"))
         sentiment_score = float(news.get("sentiment_score", 0) or 0)
         news_count = int(news.get("news_count", 0) or 0)
         pos = int(news.get("positive_count", 0) or 0)
@@ -864,78 +1679,76 @@ def render_deep_page(daily: dict[str, Any]) -> None:
         neg = int(news.get("negative_count", 0) or 0)
 
         if realtime_used:
-            st.info("這是即時分析，非今日排程結果")
+            _callout("This is a live analysis, not today's scheduled run")
 
-        # 頂部指標區
+        # Top metrics
         c1, c2, c3, c4 = st.columns(4)
         c1.markdown(
-            f"<div style='font-size:16px;color:{get_sentiment_color(sentiment_label)};font-weight:700;'>"
-            f"{sentiment_label}</div>",
+            f"<p class='card-title' style='color:{get_sentiment_color(sentiment_label)};'>"
+            f"{html.escape(sentiment_label)}</p>",
             unsafe_allow_html=True,
         )
-        c1.caption("情緒標籤")
-        c2.metric("情緒分數", f"{sentiment_score:.2f}")
-        c3.metric("新聞總數", news_count)
-        c4.metric("分佈統計", f"正面 {pos} / 中性 {neu} / 負面 {neg}")
+        _caption("Sentiment label", target=c1)
+        c2.metric(
+            "Sentiment score",
+            f"{sentiment_score:.2f}",
+            help="Time-weighted FinBERT score from -1 to 1. Positive means recent headlines lean positive. The 0-100 news score is (this value + 1) times 50.",
+        )
+        c3.metric(
+            "News count",
+            news_count,
+            help="Number of headlines included in the sentiment score.",
+        )
+        c4.metric("Breakdown", f"positive {pos} / neutral {neu} / negative {neg}")
 
-        # 情緒儀表圖
+        # Sentiment gauge
+        st.markdown("### News sentiment score")
         gauge = go.Figure(
             go.Indicator(
                 mode="gauge+number",
                 value=sentiment_score,
-                number={"valueformat": ".2f"},
-                title={"text": "新聞情緒分數"},
+                number={
+                    "valueformat": ".2f",
+                    "font": {"family": "IBM Plex Mono, monospace", "size": 22, "color": TEXT},
+                },
                 gauge={
-                    "axis": {"range": [-1, 1]},
-                    "bar": {"color": get_sentiment_color(sentiment_label)},
+                    "axis": {
+                        "range": [-1, 1],
+                        "tickfont": {"family": "IBM Plex Sans, sans-serif", "size": 12, "color": TEXT_DIM},
+                    },
+                    "bar": {"color": _sentiment_hex(sentiment_label)},
                     "steps": [
-                        {"range": [-1, -0.2], "color": "rgba(211,47,47,0.35)"},
-                        {"range": [-0.2, 0.2], "color": "rgba(158,158,158,0.35)"},
-                        {"range": [0.2, 1], "color": "rgba(0,200,83,0.35)"},
+                        {"range": [-1, -0.2], "color": "rgba(179,38,30,0.18)"},
+                        {"range": [-0.2, 0.2], "color": BAR_TRACK},
+                        {"range": [0.2, 1], "color": "rgba(14,124,90,0.18)"},
                     ],
-                    "threshold": {"line": {"color": "#FFFFFF", "width": 2}, "value": sentiment_score},
+                    "threshold": {"line": {"color": TEXT, "width": 1}, "value": sentiment_score},
                 },
             )
         )
-        gauge.update_layout(template="plotly_dark", height=300)
+        _style_figure(gauge, height=220)
         st.plotly_chart(gauge, use_container_width=True)
 
-        # AI 新聞摘要（置於 gauge 下方、新聞列表上方）
-        st.markdown("### 💡 AI 新聞分析")
+        # AI news summary sits under the gauge and above the article list
+        st.markdown("### AI news analysis")
         summary_raw = news.get("summary", "")
         summary = str(summary_raw).strip() if summary_raw is not None else ""
 
         if not summary:
-            st.caption("暫無摘要資料")
-        elif summary.startswith("[離線摘要]"):
-            st.caption("⚠️ Claude API 連線失敗，使用模板版摘要")
-            st.info(summary.replace("[離線摘要] ", "", 1))
+            _caption("No summary yet")
+        elif summary.startswith("[Offline summary]"):
+            _caption("Claude API unavailable; showing the template summary")
+            _callout(summary.replace("[Offline summary] ", "", 1))
         else:
-            summary_safe = html.escape(summary, quote=True)
             st.markdown(
-                f"""
-    <div style="
-        background-color: rgba(59, 130, 246, 0.08);
-        border-left: 4px solid #3b82f6;
-        padding: 20px 24px;
-        border-radius: 8px;
-        margin: 16px 0;
-    ">
-        <div style="
-            color: #e5e7eb;
-            line-height: 1.8;
-            font-size: 15px;
-            white-space: pre-wrap;
-        ">{summary_safe}</div>
-    </div>
-    """,
+                f"<div class='callout'><div class='body-line' style='white-space:pre-wrap;'>{_mono_numbers(summary)}</div></div>",
                 unsafe_allow_html=True,
             )
 
-        st.caption("📊 分析方法：Claude Haiku 4.5 + FinBERT 情緒分析 + 時間衰減加權")
+        _caption("Method: Claude Haiku 4.5 + FinBERT sentiment + time-decay weights")
         st.markdown("---")
 
-        st.subheader("最近新聞（點擊可前往原文）")
+        st.subheader("Recent news (open the original)")
         analyzed_news = news.get("analyzed_news", []) if isinstance(news.get("analyzed_news"), list) else []
         analyzed_news = sorted(
             analyzed_news,
@@ -943,75 +1756,109 @@ def render_deep_page(daily: dict[str, Any]) -> None:
             reverse=True,
         )
         if news_count == 0 or not analyzed_news:
-            st.info("暫無相關新聞")
+            _callout("No related news yet")
         else:
             for one in analyzed_news:
                 sent = str(one.get("sentiment", "neutral"))
-                sent_cn = str(one.get("sentiment_cn", "中性"))
-                sent_color = "#00C853" if sent == "positive" else "#FF5252" if sent == "negative" else "#9E9E9E"
-                title = _truncate_text(str(one.get("title", "")), 80)
-                publisher = str(one.get("publisher", ""))
-                tstr = _fmt_news_time(one.get("published_at"))
+                sent_cn = str(one.get("sentiment_cn", "Neutral"))
+                sent_color = (
+                    "var(--positive)" if sent == "positive" else "var(--negative)" if sent == "negative" else "var(--text-dim)"
+                )
+                title = html.escape(_truncate_text(str(one.get("title", "")), 80))
+                publisher = html.escape(str(one.get("publisher", "")))
+                tstr = html.escape(_fmt_news_time(one.get("published_at")))
                 conf = float(one.get("confidence", 0) or 0)
                 link = str(one.get("link", "") or "")
                 with st.container(border=True):
                     st.markdown(
-                        f"<div style='border-left:4px solid {sent_color}; padding-left:10px;'>"
-                        f"<div style='font-weight:700;font-size:14px;'>{title}</div>"
-                        f"<div style='color:#bdbdbd;font-size:12px;'>{publisher} · {tstr} · {sent_cn} · 信心度 {conf:.2f}</div>"
+                        f"<div style='border-left:2px solid {sent_color}; padding-left:8px;'>"
+                        f"<div class='body-line' style='font-weight:600;'>{title}</div>"
+                        f"<p class='caption'>{publisher} · {tstr} · {html.escape(sent_cn)} · "
+                        f"confidence <span class='num'>{conf:.2f}</span></p>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
                     if link:
-                        st.link_button("📖 查看原文", link, use_container_width=False)
+                        st.link_button("Read original", link, use_container_width=False)
+
+
+# Published names for the keys in config.AI_LAYERS. The keys stay internal.
+_LAYER_NAMES = {
+    "layer1_infrastructure": "Layer 1 Infrastructure",
+    "layer2_cloud": "Layer 2 Cloud & compute",
+    "layer3_foundation": "Layer 3 Foundation models",
+    "layer4_platform": "Layer 4 Data platforms",
+    "layer5_applications": "Layer 5 AI applications",
+    "layer6_consumer": "Layer 6 Consumer & content",
+}
+
+
+def _ai_layer_name(ticker: str) -> str:
+    """Look up the AI value-chain layer for one ticker.
+
+    Membership comes from config.AI_LAYERS. The returned name is the
+    published label for that key.
+
+    Args:
+        ticker: Ticker symbol.
+
+    Returns:
+        The layer name, or "—" when the ticker is in no layer.
+    """
+    sym = str(ticker).strip().upper()
+    for key, tickers in AI_LAYERS.items():
+        if sym in tickers:
+            return _LAYER_NAMES.get(key, key)
+    return "—"
 
 
 def render_overview_page(daily: dict[str, Any]) -> None:
-    """頁面三：股票總覽。"""
-    st.title("📋 股票總覽")
+    """Page 3: stock overview."""
+    st.title("Universe overview")
     rows = daily.get("all_scores", [])
     if not rows:
-        st.info("無總覽資料")
+        _callout("No overview data")
         return
     df = pd.DataFrame(rows).rename(
         columns={
-            "ticker": "股票代號",
-            "name": "公司",
-            "composite_score": "綜合評分",
-            "tech_score": "技術",
-            "fund_score": "基本",
-            "valuation_score": "估值",
-            "prediction_return_pct": "預測",
+            "ticker": "Ticker",
+            "name": "Company",
+            "composite_score": "Composite Score",
+            "tech_score": "Technical",
+            "fund_score": "Fundamental",
+            "valuation_score": "Valuation",
+            "prediction_return_pct": "Forecast",
         }
     )
-    df["產業"] = df["股票代號"].apply(get_stock_sector)
+    df["Layer"] = df["Ticker"].map(_ai_layer_name)
+    df["Peer group"] = df["Ticker"].apply(get_stock_sector)
     price_map = {}
     for p in daily.get("picks", []):
         price_map[p.get("ticker")] = p.get("current_price")
-    df["價格"] = df["股票代號"].map(price_map)
+    df["Price"] = df["Ticker"].map(price_map)
 
-    # 對 all_scores 中未帶價格的股票，補抓當前價格（使用 data_collector 快取）
-    missing_mask = df["價格"].isna()
+    # Fill prices missing from all_scores via the data_collector cache
+    missing_mask = df["Price"].isna()
     if missing_mask.any():
-        missing_tickers = df.loc[missing_mask, "股票代號"].astype(str).tolist()
+        missing_tickers = df.loc[missing_mask, "Ticker"].astype(str).tolist()
         filled_prices = {t: get_cached_current_price(t) for t in missing_tickers}
-        df.loc[missing_mask, "價格"] = df.loc[missing_mask, "股票代號"].map(filled_prices)
+        df.loc[missing_mask, "Price"] = df.loc[missing_mask, "Ticker"].map(filled_prices)
 
-    df = df[["股票代號", "公司", "價格", "綜合評分", "技術", "基本", "估值", "預測", "產業"]]
-    df = df.sort_values("綜合評分", ascending=False).reset_index(drop=True)
+    df = df[["Ticker", "Layer", "Peer group", "Company", "Price", "Composite Score", "Technical", "Fundamental", "Valuation", "Forecast"]]
+    df = df.sort_values("Composite Score", ascending=False).reset_index(drop=True)
 
-    tickers_list = df["股票代號"].astype(str).tolist()
+    tickers_list = df["Ticker"].astype(str).tolist()
     entry_by_ticker: dict[str, dict[str, Any]] = {}
     for t_sym in tickers_list:
         er = compute_entry_analysis(t_sym)
         if er:
             entry_by_ticker[t_sym] = er
 
-    def _entry_emoji(sym: str) -> str:
+    def _entry_label(sym: str) -> str:
         e = entry_by_ticker.get(str(sym))
         if not e:
-            return "⚪"
-        return get_status_emoji(str(e.get("current_status") or "watch"))
+            return "No entry"
+        return get_status_label_cn(str(e.get("current_status") or "watch"))
 
     def _dist_standard_pct(sym: str) -> str:
         e = entry_by_ticker.get(str(sym))
@@ -1023,64 +1870,48 @@ def render_overview_page(daily: dict[str, Any]) -> None:
             return "—"
         return f"{v:+.1f}%"
 
-    df["進場"] = df["股票代號"].map(_entry_emoji)
-    df["距標準進場"] = df["股票代號"].map(_dist_standard_pct)
-    df["_entry_status"] = df["股票代號"].astype(str).map(
+    df["Entry"] = df["Ticker"].map(_entry_label)
+    df["Distance to Standard Entry"] = df["Ticker"].map(_dist_standard_pct)
+    df["_entry_status"] = df["Ticker"].astype(str).map(
         lambda x: str((entry_by_ticker.get(str(x)) or {}).get("current_status") or "")
     )
 
-    keyword = st.text_input("搜尋代號/公司")
-    sectors = sorted(df["產業"].dropna().unique().tolist())
-    sector_sel = st.multiselect("篩選產業", sectors)
-    only_buy_now = st.checkbox("只顯示 🟢 立即可進場 (buy_now)", value=False)
+    keyword = st.text_input("Search ticker or company")
+    sectors = sorted(df["Peer group"].dropna().unique().tolist())
+    sector_sel = st.multiselect("Filter by peer group", sectors)
+    only_buy_now = st.checkbox("Only show names ready to enter (buy now)", value=False)
     filtered = df.copy()
     if keyword:
-        filtered = filtered[filtered["股票代號"].str.contains(keyword, case=False) | filtered["公司"].str.contains(keyword, case=False)]
+        filtered = filtered[filtered["Ticker"].str.contains(keyword, case=False) | filtered["Company"].str.contains(keyword, case=False)]
     if sector_sel:
-        filtered = filtered[filtered["產業"].isin(sector_sel)]
+        filtered = filtered[filtered["Peer group"].isin(sector_sel)]
     if only_buy_now:
         filtered = filtered[filtered["_entry_status"] == "buy_now"]
 
     display_df = filtered.drop(columns=["_entry_status"], errors="ignore")
 
-    # 盡量支援點列跳轉；若版本不支援 on_select，退回純顯示+下拉跳轉
-    selected_ticker = None
-    try:
-        event = st.dataframe(
-            display_df,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="single-row",
-        )
-        if event and event.selection and event.selection.get("rows"):
-            i = event.selection["rows"][0]
-            selected_ticker = str(display_df.iloc[i]["股票代號"])
-    except TypeError:
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+    _render_table(display_df)
 
-    sym_opts = display_df["股票代號"].tolist()
+    sym_opts = display_df["Ticker"].tolist()
     choice: str | None = None
     if sym_opts:
-        choice = st.selectbox("選擇股票查看詳細分析", sym_opts, index=0)
+        choice = st.selectbox("Select a stock for the full analysis", sym_opts, index=0)
     else:
-        st.caption("無符合篩選的股票")
-    if selected_ticker:
-        choice = selected_ticker
-    if choice and st.button("前往個股深度分析"):
+        _caption("No stocks match the filter")
+    if choice and st.button("Open stock analysis"):
         st.session_state["selected_ticker"] = choice
-        st.session_state["page"] = "🔬 個股深度分析"
+        st.session_state["page"] = "Stock Deep Dive"
         st.rerun()
 
 
 def _fmt_pct(value: Any, digits: int = 2) -> str:
-    """小數轉百分比字串（None 顯示破折號）。"""
+    """Format a fraction as a percent string. None becomes an em dash."""
     v = _to_float_safe(value)
     return f"{v:+.{digits}%}" if v is not None else "—"
 
 
 def _render_perf_metrics(summary: dict[str, Any], cumulative: dict[str, Any] | str) -> None:
-    """績效頁第一區：四張核心指標卡。"""
+    """Performance page, section 1: four headline metric cards."""
     total = int(summary.get("total_recommendations") or 0)
     done = int(summary.get("completed_1m") or 0)
     strat = _to_float_safe(cumulative.get("strategy_cumulative_return")) if isinstance(cumulative, dict) else None
@@ -1088,53 +1919,67 @@ def _render_perf_metrics(summary: dict[str, Any], cumulative: dict[str, Any] | s
     outperf = _to_float_safe(cumulative.get("outperformance")) if isinstance(cumulative, dict) else None
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("總推薦數", f"{total} 筆")
-    # 完成率為進度資訊而非績效，關掉紅綠配色避免誤讀
-    c2.metric(
-        "已完成 1M 追蹤",
-        f"{done} 筆",
-        delta=f"{done / total:.0%} 完成率" if total else None,
-        delta_color="off",
+    c1.metric(
+        "Recommendations",
+        f"{total}",
+        help="Count of logged daily recommendations.",
     )
-    # delta 帶入同一數字，讓 Streamlit 依正負自動上色
-    c3.metric("策略累積報酬", _fmt_pct(strat), delta=_fmt_pct(strat) if strat is not None else None)
-    c4.metric("超額報酬 vs SPY", _fmt_pct(outperf), delta=_fmt_pct(outperf) if outperf is not None else None)
+    c2.metric(
+        "1M tracking complete",
+        f"{done}",
+        help="How many of those recommendations already have a realized 1-month return.",
+    )
+    if total:
+        _caption(f"{done / total:.0%} complete", target=c2)
+    # Pass the same number as delta so Streamlit colors it by sign
+    c3.metric(
+        "Strategy cumulative return",
+        _fmt_pct(strat),
+        delta=_fmt_pct(strat) if strat is not None else None,
+        help="Compounded equal-weight return of the names held over the track-record window.",
+    )
+    c4.metric(
+        "Excess return vs SPY",
+        _fmt_pct(outperf),
+        delta=_fmt_pct(outperf) if outperf is not None else None,
+        help="Strategy cumulative return minus SPY buy-and-hold over the same window.",
+    )
     if spy is not None:
-        st.caption(f"SPY 同期買進持有：{_fmt_pct(spy)}")
+        _caption(f"SPY buy-and-hold over the same window: {_fmt_pct(spy)}")
 
 
 def _render_perf_curve(cumulative: dict[str, Any] | str) -> None:
-    """績效頁第二區：策略 vs SPY 累積報酬雙線圖。"""
-    st.subheader("累積報酬曲線")
+    """Performance page, section 2: strategy vs SPY cumulative-return chart."""
+    st.subheader("Cumulative return")
     if not isinstance(cumulative, dict) or not cumulative.get("dates"):
-        st.info("尚無資金曲線資料（需要更多已完成追蹤紀錄）")
+        _callout("No equity curve yet (more completed tracking records are needed)")
         return
 
     dates = pd.to_datetime(pd.Series(cumulative["dates"]))
     strat_curve = cumulative.get("strategy_equity_curve") or []
     spy_curve = cumulative.get("spy_equity_curve") or []
     dr = cumulative.get("date_range") if isinstance(cumulative.get("date_range"), dict) else {}
-    st.caption(
-        f"期間：{dr.get('start', '-')} ~ {dr.get('end', '-')}"
-        f" ｜ 共 {cumulative.get('trading_days', 0)} 個交易日"
-        f" ｜ 每交易日以在倉標的等權平均報酬複利，SPY 為同期單純買進持有"
+    _caption(
+        f"Window: {dr.get('start', '-')} ~ {dr.get('end', '-')}"
+        f" | {cumulative.get('trading_days', 0)} trading days"
+        f" | each day compounds the equal-weight return of names then held; SPY is buy-and-hold"
     )
 
     fig = go.Figure()
     fig.add_trace(
-        go.Scatter(x=dates, y=strat_curve, mode="lines", name="策略", line=dict(color="#4cc9f0", width=2.5))
+        go.Scatter(x=dates, y=strat_curve, mode="lines", name="Strategy", line=dict(color=CHART_COLORS[0], width=2.5))
     )
     if spy_curve:
         fig.add_trace(
-            go.Scatter(x=dates, y=spy_curve, mode="lines", name="SPY 買進持有", line=dict(color="#f4a261", width=2))
+            go.Scatter(x=dates, y=spy_curve, mode="lines", name="SPY buy-and-hold", line=dict(color=CHART_COLORS[1], width=2))
         )
-    fig.add_hline(y=0, line_dash="dot", line_color="#9E9E9E")
-    fig.update_layout(
-        template="plotly_dark",
+    fig.add_hline(y=0, line_dash="dot", line_color=BORDER)
+    _style_figure(
+        fig,
         height=460,
         hovermode="x unified",
         legend_orientation="h",
-        yaxis=dict(title="累積報酬", tickformat=".0%"),
+        yaxis=dict(title="", tickformat=".0%"),
         xaxis=dict(title=""),
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -1142,64 +1987,66 @@ def _render_perf_curve(cumulative: dict[str, Any] | str) -> None:
 
 def _render_perf_concentration(concentration: dict[str, Any] | str) -> None:
     """
-    績效頁第三區：留一法歸因，誠實揭露報酬是否集中於少數標的。
+    Performance page, section 3: leave-one-out attribution.
+    Shows whether the return is concentrated in a few names.
     """
-    st.subheader("績效歸因（Leave-One-Out）")
+    st.subheader("Attribution (leave-one-out)")
     if not isinstance(concentration, dict) or not concentration.get("by_ticker"):
-        st.info("尚無歸因資料（需要更多已完成追蹤紀錄）")
+        _callout("No attribution yet (more completed tracking records are needed)")
         return
 
     by_ticker = concentration["by_ticker"]
     rows = [
         {
-            "標的": ticker,
-            "入選次數": int(stats.get("picks") or 0),
-            "平均 1M 報酬": _fmt_pct(stats.get("avg_return_1m")),
-            "貢獻度": _fmt_pct(stats.get("contribution")),
+            "Ticker": ticker,
+            "Times Selected": int(stats.get("picks") or 0),
+            "Avg 1M Return": _fmt_pct(stats.get("avg_return_1m")),
+            "Contribution": _fmt_pct(stats.get("contribution")),
             "_sort": _to_float_safe(stats.get("contribution"), 0.0),
         }
         for ticker, stats in by_ticker.items()
     ]
     table = pd.DataFrame(rows).sort_values("_sort", ascending=False).drop(columns=["_sort"])
-    st.dataframe(table, use_container_width=True, hide_index=True)
+    _render_table(table)
 
     warning = concentration.get("concentration_warning")
     top = concentration.get("top_contributor") if isinstance(concentration.get("top_contributor"), dict) else {}
     if warning:
         share = _to_float_safe(top.get("share_of_outperformance"))
         pct_txt = f"{share * 100:.1f}" if share is not None else "—"
-        st.warning(
-            f"⚠️ 績效高度集中於單一標的（{top.get('ticker', '—')} 貢獻 {pct_txt}%），"
-            "樣本代表性有限，需擴大樣本驗證選股一致性"
+        _callout(
+            f"Performance is concentrated in one name ({top.get('ticker', '—')} contributes {pct_txt}%). "
+            "The sample is too narrow to treat the stock-picking result as consistent."
         )
     elif top:
-        st.caption(f"最大貢獻者：{top.get('ticker', '—')}（{_fmt_pct(top.get('contribution'))}）")
+        _caption(f"Largest contributor: {top.get('ticker', '—')} ({_fmt_pct(top.get('contribution'))})")
 
-    st.caption(
-        "貢獻度＝完整資金曲線報酬 −「移除該標的後重算」的報酬。等權配置下移除一檔會提高"
-        "其餘標的權重，因此各檔貢獻度之和不等於總報酬，此數字用於判斷集中度而非精確拆帳。"
+    _caption(
+        "Contribution = full equity-curve return minus the return recomputed without that name. "
+        "Equal weight means dropping one name raises the weight of the rest, so contributions "
+        "do not sum to the total return. Use the figure to judge concentration, not as an exact split."
     )
 
 
 def _render_perf_records() -> None:
-    """績效頁第四區：完整推薦紀錄表（可依追蹤狀態篩選）。"""
-    st.subheader("完整推薦紀錄")
+    """Performance page, section 4: full recommendation history, filterable by tracking status."""
+    st.subheader("Recommendation history")
     df = load_recommendations()
     if df.empty:
-        st.info("尚無推薦紀錄（請先執行 python src/track_record.py）")
+        _callout("No recommendations yet (run python src/track_record.py first)")
         return
 
     done_mask = pd.to_numeric(df.get("return_1m"), errors="coerce").notna()
-    choice = st.radio("篩選追蹤狀態", ["全部", "已完成", "追蹤中"], horizontal=True)
-    if choice == "已完成":
+    choice = st.radio("Tracking status", ["All", "Completed", "Tracking"], horizontal=True)
+    if choice == "Completed":
         view = df[done_mask]
-    elif choice == "追蹤中":
+    elif choice == "Tracking":
         view = df[~done_mask]
     else:
         view = df
 
     if view.empty:
-        st.caption("無符合篩選的紀錄")
+        _caption("No records match the filter")
         return
 
     view = view.copy()
@@ -1208,50 +2055,50 @@ def _render_perf_records() -> None:
 
     out = pd.DataFrame(
         {
-            "日期": view["date"].astype(str),
-            "代號": view["ticker"].astype(str),
-            "產業": view.get("sector", pd.Series(dtype=str)).astype(str),
-            "排名": pd.to_numeric(view.get("top_rank"), errors="coerce"),
-            "進場價": pd.to_numeric(view.get("entry_price"), errors="coerce").map(
+            "Date": view["date"].astype(str),
+            "Ticker": view["ticker"].astype(str),
+            "Peer group": view.get("sector", pd.Series(dtype=str)).astype(str),
+            "Rank": pd.to_numeric(view.get("top_rank"), errors="coerce"),
+            "Entry Price": pd.to_numeric(view.get("entry_price"), errors="coerce").map(
                 lambda v: f"${v:.2f}" if pd.notna(v) else "—"
             ),
-            "綜合評分": pd.to_numeric(view.get("composite_score"), errors="coerce").round(1),
+            "Composite Score": pd.to_numeric(view.get("composite_score"), errors="coerce").round(1),
             "1D": view.get("return_1d").map(_fmt_pct),
             "1W": view.get("return_1w").map(_fmt_pct),
             "2W": view.get("return_2w").map(_fmt_pct),
             "1M": view.get("return_1m").map(_fmt_pct),
             "SPY 1M": view.get("spy_return_1m").map(_fmt_pct),
             "Alpha": view.get("alpha_1m").map(_fmt_pct),
-            "狀態": view.get("status", pd.Series(dtype=str)).astype(str),
+            "Status": view.get("status", pd.Series(dtype=str)).astype(str),
         }
     )
-    st.dataframe(out, use_container_width=True, hide_index=True)
-    st.caption(f"共 {len(out)} 筆 ｜ 報酬皆以推薦當日進場價計算，1M 為持有 30 個日曆天")
+    _render_table(out)
+    _caption(f"{len(out)} rows | returns use the entry price on the recommendation date; 1M is 30 calendar days")
 
 
 def render_performance_page() -> None:
-    """頁面四：策略績效（Track Record 驗證結果）。"""
-    st.title("📊 策略績效")
-    with st.spinner("載入績效資料…"):
+    """Page 4: strategy performance from the track record."""
+    st.title("Strategy performance")
+    with st.spinner("Loading performance…"):
         perf = load_performance()
     if not perf:
-        st.error("無法載入績效資料，請先執行 python src/track_record.py")
+        _callout("Could not load performance. Run python src/track_record.py first.")
         return
 
     summary = perf.get("summary") if isinstance(perf.get("summary"), dict) else {}
-    cumulative = perf.get("cumulative", "資料不足")
-    concentration = perf.get("concentration", "資料不足")
+    cumulative = perf.get("cumulative", "insufficient data")
+    concentration = perf.get("concentration", "insufficient data")
 
     snap = perf.get("snapshot_time")
     rng = summary.get("date_range") if isinstance(summary.get("date_range"), dict) else {}
-    st.caption(
-        f"推薦期間：{rng.get('first', '-')} ~ {rng.get('last', '-')}"
-        + (f" ｜ 快照時間：{snap}" if snap else " ｜ 即時計算")
+    _caption(
+        f"Recommendation window: {rng.get('first', '-')} ~ {rng.get('last', '-')}"
+        + (f" | snapshot: {snap}" if snap else " | computed just now")
     )
 
     _render_perf_metrics(summary, cumulative)
     if perf.get("note"):
-        st.info(str(perf["note"]))
+        _callout(str(perf["note"]))
     st.divider()
     _render_perf_curve(cumulative)
     st.divider()
@@ -1261,31 +2108,27 @@ def render_performance_page() -> None:
 
 
 def main() -> None:
-    """Dashboard 主程式。"""
-    if st.button("🔄 自動刷新", help="重新載入資料"):
+    """Dashboard entry point."""
+    if st.button("Refresh", help="Reload the data"):
         st.cache_data.clear()
         st.rerun()
 
     daily = load_latest_daily_json()
+    page = _render_sidebar(daily)
     if not daily:
-        st.error("請先執行 python src/daily_picker.py 生成今日分析")
+        _callout("Run python src/daily_picker.py first to generate today's analysis")
+        _page_footer(None)
         return
 
-    st.sidebar.title("頁面導覽")
-    page_options = ["📊 每日精選", "🔬 個股深度分析", "📋 股票總覽", "📊 策略績效"]
-    default_page = st.session_state.get("page", "📊 每日精選")
-    page = st.sidebar.radio("選擇頁面", page_options, index=page_options.index(default_page) if default_page in page_options else 0)
-    st.session_state["page"] = page
-    st.sidebar.caption(f"最後更新：{daily.get('date', '-')}")
-
-    if page == "📊 每日精選":
+    if page == "Daily Picks":
         render_daily_page(daily)
-    elif page == "🔬 個股深度分析":
+    elif page == "Stock Deep Dive":
         render_deep_page(daily)
-    elif page == "📊 策略績效":
+    elif page == "Strategy Performance":
         render_performance_page()
     else:
         render_overview_page(daily)
+    _page_footer(str(daily.get("date") or ""))
 
 
 if __name__ == "__main__":

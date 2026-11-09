@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-策略績效追蹤：記錄每日 Top 推薦、回填實際報酬、彙總 vs SPY 績效。
+Strategy performance tracking: record each day's top picks, fill in realized returns, and summarize performance versus SPY.
 
-執行方式（於專案根目錄）：
+Run from the project root:
     python src/track_record.py
 """
 
@@ -37,20 +37,20 @@ TRACK_DIR.mkdir(parents=True, exist_ok=True)
 RECOMMENDATIONS_CSV = TRACK_DIR / "recommendations.csv"
 PERFORMANCE_JSON = TRACK_DIR / "performance.json"
 
-# 累積報酬合理性上限：絕對值超過 100% 視為可疑（多半是重複複利或資料異常）
+# Cumulative-return sanity cap: an absolute value above 100% is suspicious (usually double compounding or bad data)
 CUMULATIVE_SANITY_LIMIT = 1.0
-# 基準合理性上限：SPY 在 90 個交易日內漲跌超過 25% 極罕見
+# Benchmark sanity cap: a SPY move of more than 25% in 90 trading days is extremely rare
 BENCHMARK_SANITY_LIMIT = 0.25
 BENCHMARK_SANITY_DAYS = 90
 
-# 每筆推薦的持有期（日曆天），與 return_1m 的定義一致
+# Holding period in calendar days for each recommendation, matching the definition of return_1m
 HOLDING_DAYS = 30
 
-# 快取涵蓋範圍容許的落後天數（吸收週末與假日）
+# How many days a cache may lag the requested end (absorbs weekends and holidays)
 CACHE_COVERAGE_TOLERANCE_DAYS = 4
-# yfinance 呼叫間的節流秒數
+# Seconds to wait between yfinance calls
 YF_CALL_SLEEP_SEC = 0.6
-# 單一標的貢獻超過總超額報酬的此比例即視為績效過度集中
+# A single name is treated as over-concentrated when its contribution exceeds this share of total excess return
 CONCENTRATION_WARN_SHARE = 0.5
 
 _log = logging.getLogger("track_record")
@@ -92,7 +92,7 @@ CSV_COLUMNS: list[str] = [
     "status",
 ]
 
-# 持有天數門檻 → (價格欄, 報酬欄)
+# Holding-day threshold -> (price column, return column)
 _HORIZON_SPECS: list[tuple[int, str, str]] = [
     (1, "actual_price_1d", "return_1d"),
     (7, "actual_price_1w", "return_1w"),
@@ -113,7 +113,7 @@ def _to_float(value: Any, default: float | None = None) -> float | None:
 
 
 def _parse_date(value: Any) -> date | None:
-    """支援多種日期格式，回傳 date（無時區）。"""
+    """Parse several date formats and return a timezone-naive date."""
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return None
     if isinstance(value, datetime):
@@ -153,7 +153,7 @@ def _is_empty(value: Any) -> bool:
 
 
 def _ensure_csv_schema(df: pd.DataFrame) -> pd.DataFrame:
-    """補齊缺少欄位、統一欄位順序。"""
+    """Fill missing columns and enforce the column order."""
     out = df.copy() if df is not None else pd.DataFrame(columns=CSV_COLUMNS)
     for col in CSV_COLUMNS:
         if col not in out.columns:
@@ -168,7 +168,7 @@ def _load_recommendations() -> pd.DataFrame:
         df = pd.read_csv(RECOMMENDATIONS_CSV)
         return _ensure_csv_schema(df)
     except Exception as e:  # noqa: BLE001
-        _log.warning("讀取 recommendations.csv 失敗：%s", e)
+        _log.warning("Failed to read recommendations.csv: %s", e)
         return pd.DataFrame(columns=CSV_COLUMNS)
 
 
@@ -177,11 +177,11 @@ def _save_recommendations(df: pd.DataFrame) -> None:
         TRACK_DIR.mkdir(parents=True, exist_ok=True)
         _ensure_csv_schema(df).to_csv(RECOMMENDATIONS_CSV, index=False, encoding="utf-8")
     except Exception as e:  # noqa: BLE001
-        _log.warning("寫入 recommendations.csv 失敗：%s", e)
+        _log.warning("Failed to write recommendations.csv: %s", e)
 
 
 def _index_as_dates(index: Any) -> list[date | None]:
-    """將 DatetimeIndex（含 tz）轉成純 date 列表。"""
+    """Turn a DatetimeIndex (including timezone-aware) into a list of plain dates."""
     out: list[date | None] = []
     for d in index:
         try:
@@ -193,7 +193,7 @@ def _index_as_dates(index: Any) -> list[date | None]:
 
 
 def _history_close_on_or_after(hist: pd.DataFrame, target: date) -> float | None:
-    """取 target 當天或之後最近交易日收盤價（不含更早日，避免誤填前瞻報酬）。"""
+    """Close on target or the next trading day. Earlier days are not used, so a forward return is not filled by mistake."""
     if hist is None or hist.empty or "Close" not in hist.columns:
         return None
     try:
@@ -206,12 +206,12 @@ def _history_close_on_or_after(hist: pd.DataFrame, target: date) -> float | None
                 return float(closes.iloc[i])
         return None
     except Exception as e:  # noqa: BLE001
-        _log.debug("解析收盤價失敗 target=%s: %s", target, e)
+        _log.debug("Failed to parse close target=%s: %s", target, e)
         return None
 
 
 def _history_close_on_or_before(hist: pd.DataFrame, target: date) -> float | None:
-    """取 target 當天或之前最近交易日收盤價（用於進場日 SPY 對照）。"""
+    """Close on target or the previous trading day. Used for the SPY comparison on the entry day."""
     if hist is None or hist.empty or "Close" not in hist.columns:
         return None
     try:
@@ -229,14 +229,14 @@ def _history_close_on_or_before(hist: pd.DataFrame, target: date) -> float | Non
             return float(closes.iloc[last_i])
         return None
     except Exception as e:  # noqa: BLE001
-        _log.debug("解析收盤價(on_or_before)失敗 target=%s: %s", target, e)
+        _log.debug("Failed to parse close (on_or_before) target=%s: %s", target, e)
         return None
 
 
 def _load_local_cache_history(ticker: str) -> pd.DataFrame:
     """
-    從 data/cache/YYYY-MM-DD/{TICKER}.parquet 載入最新一版價量快取。
-    （不依賴「今天」資料夾，方便離線回填。）
+    Load the newest price cache from data/cache/YYYY-MM-DD/{TICKER}.parquet.
+    It does not depend on today's folder, so offline backfill still works.
     """
     sym = str(ticker).strip().upper()
     cache_root = Path(CACHE_DIR)
@@ -251,7 +251,7 @@ def _load_local_cache_history(ticker: str) -> pd.DataFrame:
             if pq.is_file():
                 candidates.append(pq)
     except Exception as e:  # noqa: BLE001
-        _log.debug("掃描本地快取失敗 %s: %s", sym, e)
+        _log.debug("Failed to scan the local cache %s: %s", sym, e)
         return pd.DataFrame()
     if not candidates:
         return pd.DataFrame()
@@ -261,38 +261,38 @@ def _load_local_cache_history(ticker: str) -> pd.DataFrame:
         df = pd.read_parquet(latest)
         if df is None or df.empty:
             return pd.DataFrame()
-        _log.debug("使用本地快取 %s ← %s", sym, latest)
+        _log.debug("Using local cache %s <- %s", sym, latest)
         return df
     except Exception as e:  # noqa: BLE001
-        _log.warning("讀取本地 parquet 失敗 %s: %s", latest, e)
+        _log.warning("Failed to read local parquet %s: %s", latest, e)
         return pd.DataFrame()
 
 
 def _fetch_yfinance_history(ticker: str, start: date, end: date) -> pd.DataFrame:
     """
-    用 yfinance 抓 [start, end] 區間日線（end 會 +1 天以含當日），失敗重試 3 次。
+    Fetch daily bars for [start, end] with yfinance (end is plus one day so the end date is included). Retry 3 times on failure.
 
-    參數：
-        ticker: 股票代號
-        start: 起始日期（含）
-        end: 結束日期（含）
-    回傳：
-        日線 DataFrame；全部失敗時回傳空 DataFrame
+    Args:
+        ticker: Symbol.
+        start: First date, inclusive.
+        end: Last date, inclusive.
+    Returns:
+        A daily DataFrame. An empty DataFrame when every attempt fails.
     """
     sym = str(ticker).strip().upper()
     end_excl = end + timedelta(days=1)
     delays = (1.0, 2.0, 4.0)
     for attempt in range(3):
         try:
-            time.sleep(YF_CALL_SLEEP_SEC)  # 節流，避免連續呼叫觸發 429
+            time.sleep(YF_CALL_SLEEP_SEC)  # Pause so back-to-back calls do not trigger 429.
             t = yf.Ticker(sym)
             hist = t.history(start=start.isoformat(), end=end_excl.isoformat(), auto_adjust=True)
             if hist is not None and not hist.empty:
                 return hist
-            _log.debug("yfinance history 無資料 %s [%s ~ %s]（第 %s 次）", sym, start, end, attempt + 1)
+            _log.debug("yfinance history has no data %s [%s ~ %s] (attempt %s)", sym, start, end, attempt + 1)
         except Exception as e:  # noqa: BLE001
             _log.warning(
-                "yfinance history 失敗 %s [%s ~ %s]（第 %s 次）: %s", sym, start, end, attempt + 1, e
+                "yfinance history failed %s [%s ~ %s] (attempt %s): %s", sym, start, end, attempt + 1, e
             )
         if attempt < 2:
             time.sleep(delays[attempt])
@@ -300,7 +300,7 @@ def _fetch_yfinance_history(ticker: str, start: date, end: date) -> pd.DataFrame
 
 
 def _history_max_date(hist: pd.DataFrame) -> date | None:
-    """取歷史資料中最新一筆的日期（無法解析時回傳 None）。"""
+    """Latest date in a history frame. None when it cannot be parsed."""
     if hist is None or hist.empty:
         return None
     dates = [d0 for d0 in _index_as_dates(hist.index) if d0 is not None]
@@ -309,53 +309,53 @@ def _history_max_date(hist: pd.DataFrame) -> date | None:
 
 def _cache_covers(cache_max: date, end: date) -> bool:
     """
-    判斷快取是否已涵蓋請求的 end 日期。
+    Whether the cache already covers the requested end date.
 
-    end 落在週末或假日時不會有新交易日資料，因此先退回最近的工作日，
-    並容許 CACHE_COVERAGE_TOLERANCE_DAYS 天落差，避免每次都誤判快取過期。
+    When end falls on a weekend or holiday there is no new trading-day bar, so the check steps back to the latest weekday
+    and allows CACHE_COVERAGE_TOLERANCE_DAYS of lag, so the cache is not treated as stale every time.
 
-    參數：
-        cache_max: 快取中最新一筆資料的日期
-        end: 請求涵蓋到的日期
-    回傳：
-        True 表示快取足夠新，可直接使用
+    Args:
+        cache_max: Date of the newest row in the cache.
+        end: Date the request needs to cover, inclusive.
+    Returns:
+        True when the cache is new enough to use as-is.
     """
     target = min(end, date.today())
-    while target.weekday() >= 5:  # 週六=5、週日=6
+    while target.weekday() >= 5:  # Saturday=5, Sunday=6
         target -= timedelta(days=1)
     return cache_max >= target - timedelta(days=CACHE_COVERAGE_TOLERANCE_DAYS)
 
 
 def _update_cache_history(ticker: str, hist: pd.DataFrame) -> None:
     """
-    把新抓到的日線寫入當日快取目錄，讓後續呼叫不必重抓。
+    Write newly fetched daily bars into today's cache directory so later calls do not refetch them.
 
-    只寫 {TICKER}.parquet；data_collector 另需 _info.json 才視為有效快取，
-    因此不會影響它自己的快取判斷。
+    Only {TICKER}.parquet is written. data_collector also requires _info.json before it treats a cache as valid,
+    so this write does not change that module's own cache decision.
     """
     sym = str(ticker).strip().upper()
     try:
         day_dir = Path(CACHE_DIR) / date.today().isoformat()
         day_dir.mkdir(parents=True, exist_ok=True)
         hist.to_parquet(day_dir / f"{sym}.parquet", index=True)
-        _log.debug("已更新價量快取 %s → %s", sym, day_dir)
+        _log.debug("Updated price cache %s -> %s", sym, day_dir)
     except Exception as e:  # noqa: BLE001
-        _log.warning("更新價量快取失敗 %s: %s", sym, e)
+        _log.warning("Failed to update the price cache %s: %s", sym, e)
 
 
 def _fetch_history(ticker: str, start: date, end: date) -> pd.DataFrame:
     """
-    取得 [start, end] 期間日線：快取涵蓋請求區間時優先用快取，否則改抓 yfinance。
+    Daily bars for [start, end]. Use the cache when it covers the request. Otherwise fetch from yfinance.
 
-    快取若只到較早日期（例如最後一次收集是一個月前），直接沿用會導致新推薦
-    永遠回填不到滿 30 天的價格，因此必須偵測涵蓋範圍後重抓並更新快取。
+    If the cache only reaches an earlier date (for example the last collection was a month ago), reusing it
+    would leave new recommendations without a full 30 days of prices. Coverage is checked, then the cache is refetched and updated.
 
-    參數：
-        ticker: 股票代號
-        start: 起始日期（含）
-        end: 需要涵蓋到的日期（含）
-    回傳：
-        日線 DataFrame；皆失敗時回傳空 DataFrame
+    Args:
+        ticker: Symbol.
+        start: First date, inclusive.
+        end: Date that must be covered, inclusive.
+    Returns:
+        A daily DataFrame. An empty DataFrame when both sources fail.
     """
     sym = str(ticker).strip().upper()
     local = _load_local_cache_history(sym)
@@ -365,7 +365,7 @@ def _fetch_history(ticker: str, start: date, end: date) -> pd.DataFrame:
         return local
 
     if local_max is not None:
-        _log.info("快取 %s 僅到 %s，未涵蓋 %s，改抓 yfinance", sym, local_max, end)
+        _log.info("Cache %s only reaches %s and does not cover %s, fetching yfinance", sym, local_max, end)
     fresh = _fetch_yfinance_history(sym, start, end)
     if not fresh.empty:
         _update_cache_history(sym, fresh)
@@ -373,8 +373,8 @@ def _fetch_history(ticker: str, start: date, end: date) -> pd.DataFrame:
 
     if not local.empty:
         _log.warning(
-            "yfinance 抓取失敗，改用截斷的本地快取 %s：資料僅到 %s（請求至 %s），"
-            "該日之後的報酬無法回填，下次執行會再試",
+            "yfinance fetch failed, using the truncated local cache %s: data only through %s (requested through %s). "
+            "Returns after that date cannot be filled. The next run will try again",
             sym,
             local_max,
             end,
@@ -383,11 +383,9 @@ def _fetch_history(ticker: str, start: date, end: date) -> pd.DataFrame:
 
 
 def record_daily_picks(picks_result: dict[str, Any]) -> None:
-    """
-    將當日 Top picks append 到 recommendations.csv（同日同 ticker 不重複）。
-    """
+    """Append today's top picks to recommendations.csv. The same day and ticker are not written twice."""
     if not isinstance(picks_result, dict):
-        _log.warning("record_daily_picks：picks_result 不是 dict，略過")
+        _log.warning("record_daily_picks: picks_result is not a dict, skipped")
         return
 
     day = _parse_date(picks_result.get("date")) or date.today()
@@ -413,7 +411,7 @@ def record_daily_picks(picks_result: dict[str, Any]) -> None:
         if not ticker:
             continue
         if (day_str, ticker) in existing_keys:
-            _log.info("已存在紀錄，略過：%s %s", day_str, ticker)
+            _log.info("Record already exists, skipped: %s %s", day_str, ticker)
             continue
 
         tech = p.get("technical") if isinstance(p.get("technical"), dict) else {}
@@ -457,7 +455,7 @@ def record_daily_picks(picks_result: dict[str, Any]) -> None:
         existing_keys.add((day_str, ticker))
 
     if not new_rows:
-        _log.info("record_daily_picks：無新紀錄可寫入（%s）", day_str)
+        _log.info("record_daily_picks: no new rows to write (%s)", day_str)
         return
 
     add_df = _ensure_csv_schema(pd.DataFrame(new_rows))
@@ -466,13 +464,11 @@ def record_daily_picks(picks_result: dict[str, Any]) -> None:
     else:
         merged = pd.concat([_ensure_csv_schema(existing), add_df], ignore_index=True)
     _save_recommendations(merged)
-    _log.info("record_daily_picks：新增 %s 筆（%s）→ %s", len(new_rows), day_str, RECOMMENDATIONS_CSV)
+    _log.info("record_daily_picks: added %s rows (%s) -> %s", len(new_rows), day_str, RECOMMENDATIONS_CSV)
 
 
 def update_actuals(days_lookback: int = 45) -> dict[str, Any]:
-    """
-    回填近 days_lookback 天內推薦的實際收盤與報酬。
-    """
+    """Fill in realized closes and returns for recommendations inside the last days_lookback days."""
     stats: dict[str, Any] = {
         "total_records": 0,
         "updated_1d": 0,
@@ -483,7 +479,7 @@ def update_actuals(days_lookback: int = 45) -> dict[str, Any]:
     }
     df = _load_recommendations()
     if df.empty:
-        _log.info("update_actuals：尚無推薦紀錄")
+        _log.info("update_actuals: no recommendations yet")
         return stats
 
     today = date.today()
@@ -492,7 +488,7 @@ def update_actuals(days_lookback: int = 45) -> dict[str, Any]:
     hard_floor = today - timedelta(days=max(lookback, 400))
     stats["total_records"] = int(len(df))
 
-    # 預先快取各 ticker / SPY 歷史（一次抓足夠長區間）
+    # Prefetch each ticker and SPY once, over a window long enough for every row.
     hist_cache: dict[str, pd.DataFrame] = {}
     fetch_start_global = hard_floor - timedelta(days=10)
 
@@ -510,7 +506,7 @@ def update_actuals(days_lookback: int = 45) -> dict[str, Any]:
             if entry_d is None:
                 continue
             incomplete = _is_empty(row.get("return_1m"))
-            # lookback 內一律處理；之外僅補尚未 completed，且不早於 hard_floor
+            # Always process rows inside the lookback. Outside it, only fill rows that are not yet completed, and not before hard_floor.
             if entry_d < cutoff and (not incomplete or entry_d < hard_floor):
                 continue
 
@@ -525,7 +521,7 @@ def update_actuals(days_lookback: int = 45) -> dict[str, Any]:
 
             hist = get_hist(ticker)
             if hist.empty:
-                stats["errors"].append(f"{ticker}@{entry_d}: 無歷史股價")
+                stats["errors"].append(f"{ticker}@{entry_d}: no price history")
                 continue
 
             for days_n, price_col, ret_col in _HORIZON_SPECS:
@@ -548,7 +544,7 @@ def update_actuals(days_lookback: int = 45) -> dict[str, Any]:
                 elif days_n == 30:
                     stats["updated_1m"] += 1
 
-            # 1M：補 SPY 與 alpha（必要時回填缺漏的 spy_price_entry）
+            # 1M: fill SPY and alpha, and backfill a missing spy_price_entry when needed.
             if elapsed >= 30 and (
                 _is_empty(df.at[idx, "spy_price_1m"]) or _is_empty(df.at[idx, "alpha_1m"])
             ):
@@ -582,16 +578,16 @@ def update_actuals(days_lookback: int = 45) -> dict[str, Any]:
             else:
                 df.at[idx, "status"] = "open"
 
-            _log.debug("已檢查 %s %s", entry_d, ticker)
+            _log.debug("Checked %s %s", entry_d, ticker)
 
         except Exception as e:  # noqa: BLE001
-            msg = f"列 {idx} 更新失敗: {e}"
+            msg = f"row {idx} update failed: {e}"
             _log.warning(msg)
             stats["errors"].append(msg)
 
     _save_recommendations(df)
     _log.info(
-        "update_actuals 完成：1d=%s 1w=%s 2w=%s 1m=%s errors=%s",
+        "update_actuals done: 1d=%s 1w=%s 2w=%s 1m=%s errors=%s",
         stats["updated_1d"],
         stats["updated_1w"],
         stats["updated_2w"],
@@ -624,21 +620,21 @@ def _safe_std(series: pd.Series) -> float | None:
 
 def _warn_if_implausible(label: str, cum_return: float | None, trading_days: int) -> None:
     """
-    累積報酬合理性檢查：絕對值超過 CUMULATIVE_SANITY_LIMIT 時 log warning。
+    Sanity check on cumulative return. Log a warning when the absolute value exceeds CUMULATIVE_SANITY_LIMIT.
 
-    參數：
-        label: 標籤（例如「策略」、「SPY」），用於訊息辨識
-        cum_return: 累積報酬（小數，例如 0.35 = +35%）
-        trading_days: 資金曲線涵蓋的交易日數
-    回傳：
-        None
+    Args:
+        label: Label used in the message, for example "Strategy" or "SPY".
+        cum_return: Cumulative return as a fraction, for example 0.35 = +35%.
+        trading_days: Number of trading days covered by the equity curve.
+    Returns:
+        None. A warning is logged when the value looks implausible.
     """
     if cum_return is None:
         return
     if abs(cum_return) > CUMULATIVE_SANITY_LIMIT:
         _log.warning(
-            "%s 累積報酬 %+.2f%%（%s 個交易日）絕對值超過 %.0f%%，可能為計算錯誤："
-            "請檢查是否把重疊的持有期當成接續操作連乘，或原始價格資料異常",
+            "%s cumulative return %+.2f%% over %s trading days has an absolute value above %.0f%%, which may be a calculation error: "
+            "check whether overlapping holding periods were compounded as if they were sequential, or whether the raw prices are bad",
             label,
             cum_return * 100,
             trading_days,
@@ -648,20 +644,20 @@ def _warn_if_implausible(label: str, cum_return: float | None, trading_days: int
 
 def _warn_if_benchmark_implausible(spy_cum: float | None, trading_days: int) -> None:
     """
-    基準（SPY）合理性檢查：短期間內漲跌幅過大代表期間長度或價格資料有問題。
+    Sanity check on the SPY benchmark. A very large move over a short window means the window length or the prices are wrong.
 
-    參數：
-        spy_cum: SPY 累積報酬（小數）
-        trading_days: 資金曲線涵蓋的交易日數
-    回傳：
+    Args:
+        spy_cum: SPY cumulative return as a fraction.
+        trading_days: Number of trading days covered by the equity curve.
+    Returns:
         None
     """
     if spy_cum is None:
         return
     if abs(spy_cum) > BENCHMARK_SANITY_LIMIT and trading_days < BENCHMARK_SANITY_DAYS:
         _log.warning(
-            "SPY 累積報酬 %+.2f%% 僅用 %s 個交易日達成，超過 %.0f%% 門檻："
-            "SPY 在三個月內漲跌超過 %.0f%% 極為罕見，請檢查期間長度是否被錯誤放大",
+            "SPY cumulative return %+.2f%% was reached in only %s trading days, above the %.0f%% bar: "
+            "a SPY move of more than %.0f%% inside three months is extremely rare. Check whether the window length was stretched by mistake",
             spy_cum * 100,
             trading_days,
             BENCHMARK_SANITY_LIMIT * 100,
@@ -671,14 +667,14 @@ def _warn_if_benchmark_implausible(spy_cum: float | None, trading_days: int) -> 
 
 def _daily_close_series(ticker: str, start: date, end: date) -> pd.Series | None:
     """
-    取單一標的在 [start, end] 期間的每日收盤價序列。
+    Daily close series for one symbol over [start, end].
 
-    參數：
-        ticker: 股票代號
-        start: 起始日期（含）
-        end: 結束日期（含）
-    回傳：
-        index 為 date、值為收盤價的 Series（已排序去重）；無資料時回傳 None
+    Args:
+        ticker: Symbol.
+        start: First date, inclusive.
+        end: Last date, inclusive.
+    Returns:
+        A Series indexed by date, values are closes, sorted and de-duplicated. None when there is no data.
     """
     hist = _fetch_history(ticker, start, end)
     if hist is None or hist.empty or "Close" not in hist.columns:
@@ -689,34 +685,34 @@ def _daily_close_series(ticker: str, start: date, end: date) -> pd.Series | None
             return None
         s = pd.Series(closes.to_numpy(dtype=float), index=_index_as_dates(closes.index))
         s = s[[d0 is not None for d0 in s.index]]
-        # 本地快取為固定 1 年區間，需自行裁切到需要的期間
+        # The local cache is a fixed one-year window, so it is sliced to the requested period.
         s = s[[start <= d0 <= end for d0 in s.index]]
         if s.empty:
             return None
         s = s[~s.index.duplicated(keep="last")].sort_index()
         return s
     except Exception as e:  # noqa: BLE001
-        _log.warning("建立每日收盤序列失敗 %s [%s ~ %s]: %s", ticker, start, end, e)
+        _log.warning("Failed to build the daily close series %s [%s ~ %s]: %s", ticker, start, end, e)
         return None
 
 
 def _position_daily_returns(closes: pd.Series, entry_d: date) -> dict[date, float]:
     """
-    計算單筆推薦在持有期內的「每日報酬」。
+    Daily returns for one recommendation over its holding window.
 
-    進場價為進場日（或之前最近交易日）收盤，因此報酬自進場日之後的第一個
-    交易日起算，持有區間為 (entry_d, entry_d + HOLDING_DAYS]。
+    The entry price is the close on the entry day, or the nearest prior trading day. Returns therefore start
+    on the first trading day after the entry day. The holding window is (entry_d, entry_d + HOLDING_DAYS].
 
-    參數：
-        closes: 該標的的每日收盤序列（index 為 date）
-        entry_d: 進場日期
-    回傳：
-        {交易日: 當日報酬} 字典；資料不足時回傳空 dict
+    Args:
+        closes: That symbol's daily closes, indexed by date.
+        entry_d: Entry date.
+    Returns:
+        {trading day: that day's return}. An empty dict when the data are insufficient.
     """
     exit_d = entry_d + timedelta(days=HOLDING_DAYS)
     window = closes[[entry_d <= d0 <= exit_d for d0 in closes.index]]
     if len(window) < 2:
-        # 進場日非交易日時，往前找最近一個交易日當基準價
+        # When the entry day is not a trading day, walk back to the nearest trading day for the base price.
         base = closes[[d0 <= entry_d for d0 in closes.index]]
         if base.empty:
             return {}
@@ -729,15 +725,15 @@ def _position_daily_returns(closes: pd.Series, entry_d: date) -> dict[date, floa
 
 def _prepare_curve_inputs(df: pd.DataFrame) -> dict[str, Any]:
     """
-    抓取每日收盤價並展開成資金曲線所需的原料（只抓一次，供曲線與歸因共用）。
+    Fetch daily closes and expand them into the inputs the equity curve needs. Fetched once and shared by the curve and the attribution.
 
-    參數：
-        df: recommendations 資料表
-    回傳：
-        {"positions": [(代號, 進場日, {交易日: 當日報酬})], "spy_closes": Series|None,
-         "anchor": 基準日, "spine": [交易日]}；資料不足時回傳 {}
+    Args:
+        df: The recommendations table.
+    Returns:
+        {"positions": [(symbol, entry date, {trading day: that day's return})], "spy_closes": Series|None,
+         "anchor": base date, "spine": [trading days]}. An empty dict when the data are insufficient.
     """
-    # 蒐集有效持倉（需有日期與代號；報酬由每日價格重算，不依賴 return_1m）
+    # Collect valid positions. A date and a symbol are required. Returns are recomputed from daily prices, not from return_1m.
     raw: list[tuple[str, date]] = []
     for _, r in df.iterrows():
         entry_d = _parse_date(r.get("date"))
@@ -749,17 +745,17 @@ def _prepare_curve_inputs(df: pd.DataFrame) -> dict[str, Any]:
 
     first_entry = min(d0 for _, d0 in raw)
     last_exit = max(d0 for _, d0 in raw) + timedelta(days=HOLDING_DAYS)
-    # 往前多取 10 天，確保進場日遇假日時仍找得到基準收盤價
+    # Fetch 10 extra days so a holiday entry day still has a base close.
     fetch_start = first_entry - timedelta(days=10)
     fetch_end = min(last_exit, date.today())
 
-    # 每個代號只抓一次，涵蓋其所有持倉區間
+    # Each symbol is fetched once, covering all of its holding windows.
     closes_by_ticker: dict[str, pd.Series | None] = {}
     for ticker, _ in raw:
         if ticker not in closes_by_ticker:
             closes_by_ticker[ticker] = _daily_close_series(ticker, fetch_start, fetch_end)
 
-    # 逐筆展開為 {交易日: 當日報酬}
+    # Expand each position into {trading day: that day's return}.
     positions: list[tuple[str, date, dict[date, float]]] = []
     missing: list[str] = []
     for ticker, entry_d in raw:
@@ -770,11 +766,11 @@ def _prepare_curve_inputs(df: pd.DataFrame) -> dict[str, Any]:
         else:
             missing.append(f"{ticker}@{entry_d}")
     if missing:
-        _log.warning("資金曲線：%s 筆持倉缺少每日價格，已略過（%s）", len(missing), ", ".join(missing[:5]))
+        _log.warning("Equity curve: %s positions have no daily prices and were skipped (%s)", len(missing), ", ".join(missing[:5]))
     if not positions:
         return {}
 
-    # 交易日主軸優先用 SPY 日曆（同時作為基準價來源），失敗則用持倉日期聯集
+    # Prefer the SPY calendar as the trading-day spine and as the benchmark price source. Fall back to the union of position dates.
     spy_closes = _daily_close_series("SPY", fetch_start, fetch_end)
     curve_end = max(max(r.keys()) for _, _, r in positions)
     if spy_closes is not None and not spy_closes.empty:
@@ -796,15 +792,15 @@ def _equity_curve(
     exclude: str | list[str] | set[str] | None = None,
 ) -> tuple[list[float], float]:
     """
-    由每日報酬合成資金曲線：每個交易日取在倉標的當日報酬的等權平均後複利。
+    Build an equity curve from daily returns. Each trading day is the equal-weight average of names held that day, then compounded.
 
-    參數：
-        positions: [(代號, 進場日, {交易日: 當日報酬})]
-        spine: 交易日主軸
-        exclude: 要排除的代號（單一字串、清單或集合；用於貢獻度歸因與
-                 performance_excluding）
-    回傳：
-        (資金曲線累積報酬列表, 最終累積報酬)
+    Args:
+        positions: [(symbol, entry date, {trading day: that day's return})]
+        spine: Trading-day axis.
+        exclude: Symbols to drop (one string, a list, or a set). Used by contribution attribution and
+                 performance_excluding.
+    Returns:
+        (equity-curve cumulative returns, final cumulative return)
     """
     if exclude is None:
         exclude_set: set[str] = set()
@@ -814,10 +810,10 @@ def _equity_curve(
         exclude_set = {str(t).strip().upper() for t in exclude if str(t).strip()}
     active = [r for t, _d, r in positions if t not in exclude_set]
     equity = 1.0
-    curve: list[float] = [0.0]  # 起點為基準日、報酬 0
+    curve: list[float] = [0.0]  # Starts on the base date, return 0.
     for d0 in spine:
         todays = [r[d0] for r in active if d0 in r]
-        port_ret = sum(todays) / len(todays) if todays else 0.0  # 無持倉當日不動
+        port_ret = sum(todays) / len(todays) if todays else 0.0  # A day with no positions does not move.
         equity *= 1.0 + port_ret
         curve.append(round(equity - 1.0, 6))
     return curve, equity - 1.0
@@ -825,16 +821,16 @@ def _equity_curve(
 
 def _build_daily_equity_curve(inputs: dict[str, Any]) -> dict[str, Any]:
     """
-    以「交易日」為單位建立資金曲線，正確處理重疊的持有期。
+    Build the equity curve in trading-day units, so overlapping holding periods are handled correctly.
 
-    每個交易日的組合報酬 = 當日所有在倉標的（entry_d < 該日 <= entry_d+HOLDING_DAYS）
-    當日報酬的等權平均；無持倉當日報酬視為 0。SPY 基準改為同一段日曆期間的
-    單純買進持有，避免把重疊持有期的報酬重複複利。
+    Each day's portfolio return is the equal-weight average of names held that day
+    (entry_d < day <= entry_d + HOLDING_DAYS). A day with no positions has return 0.
+    The SPY benchmark is a simple buy-and-hold over the same calendar window, so overlapping holds are not compounded twice.
 
-    參數：
-        inputs: _prepare_curve_inputs() 的輸出
-    回傳：
-        cumulative 結果 dict；資料不足時回傳 {}
+    Args:
+        inputs: Output of _prepare_curve_inputs().
+    Returns:
+        The cumulative result dict. An empty dict when the data are insufficient.
     """
     if not inputs:
         return {}
@@ -847,7 +843,7 @@ def _build_daily_equity_curve(inputs: dict[str, Any]) -> dict[str, Any]:
     curve_dates = [anchor.isoformat()] + [d0.isoformat() for d0 in spine]
     trading_days = len(curve_dates)
 
-    # SPY：同期間單純買進持有（anchor 收盤買、曲線最後一日收盤賣）
+    # SPY: simple buy-and-hold over the same window (buy the anchor close, sell the close on the last curve day).
     spy_cum: float | None = None
     spy_curve: list[float] = []
     if spy_closes is not None and anchor in spy_closes.index:
@@ -860,7 +856,7 @@ def _build_daily_equity_curve(inputs: dict[str, Any]) -> dict[str, Any]:
                 spy_curve.append(round(px / spy_base - 1.0, 6) if px else prev)
             spy_cum = spy_curve[-1]
 
-    _warn_if_implausible("策略", strategy_cum, trading_days)
+    _warn_if_implausible("Strategy", strategy_cum, trading_days)
     _warn_if_implausible("SPY", spy_cum, trading_days)
     _warn_if_benchmark_implausible(spy_cum, trading_days)
 
@@ -880,18 +876,18 @@ def _build_concentration(
     df: pd.DataFrame, inputs: dict[str, Any], cumulative: dict[str, Any] | str
 ) -> dict[str, Any]:
     """
-    回答「超額報酬集中在哪幾檔」：以留一法（leave-one-out）計算每檔的貢獻度。
+    Answer which names the excess return is concentrated in, using leave-one-out contribution.
 
-    貢獻度 = 完整資金曲線累積報酬 − 移除該標的後重算的累積報酬。等權配置下
-    移除一檔會使其餘標的權重上升，因此各檔貢獻度之和不會恰等於總報酬，
-    這是留一法歸因的固有性質，用於判斷「集中度」而非精確拆帳。
+    Contribution = full equity-curve cumulative return minus the cumulative return recomputed without that name.
+    Under equal weight, dropping one name raises the weight of the others, so the contributions do not sum exactly to the total return.
+    That is inherent to leave-one-out attribution. It is used to judge concentration, not to split the return into exact pieces.
 
-    參數：
-        df: recommendations 資料表
-        inputs: _prepare_curve_inputs() 的輸出
-        cumulative: _build_daily_equity_curve() 的結果
-    回傳：
-        concentration 結果 dict；資料不足時回傳 {}
+    Args:
+        df: The recommendations table.
+        inputs: Output of _prepare_curve_inputs().
+        cumulative: Result of _build_daily_equity_curve().
+    Returns:
+        The concentration result dict. An empty dict when the data are insufficient.
     """
     if not inputs or not isinstance(cumulative, dict):
         return {}
@@ -900,7 +896,7 @@ def _build_concentration(
     total_cum = float(cumulative["strategy_cumulative_return"])
     outperf = cumulative.get("outperformance")
 
-    # 各檔入選次數與平均 return_1m（以完整資料表為準）
+    # Pick count and average return_1m for each name, from the full table.
     tickers = sorted({t for t, _d, _r in positions})
     by_ticker: dict[str, Any] = {}
     for ticker in tickers:
@@ -912,20 +908,20 @@ def _build_concentration(
             "contribution": round(total_cum - cum_without, 6),
         }
 
-    # 依貢獻度由高到低排序，方便報告直接呈現
+    # Sort by contribution, highest first, so a report can print the table as-is.
     by_ticker = dict(sorted(by_ticker.items(), key=lambda kv: kv[1]["contribution"], reverse=True))
 
     top_ticker, top_stats = next(iter(by_ticker.items()))
     top_contrib = float(top_stats["contribution"])
-    # 佔比以總超額報酬為分母（缺 SPY 基準時退回總累積報酬）
+    # Share uses total excess return as the denominator. When the SPY benchmark is missing, fall back to total cumulative return.
     denom = float(outperf) if outperf not in (None, 0) else total_cum
     share = (top_contrib / denom) if denom > 0 else None
 
     warning = None
     if share is not None and share > CONCENTRATION_WARN_SHARE:
-        warning = "績效高度集中於單一標的，樣本代表性有限"
+        warning = "Performance is highly concentrated in one name, so the sample is a weak representation"
         _log.warning(
-            "%s 貢獻 %+.2f%%，佔總超額報酬 %.1f%%（>%.0f%%）：%s",
+            "%s contributed %+.2f%%, %.1f%% of total excess return (>%.0f%%): %s",
             top_ticker,
             top_contrib * 100,
             share * 100,
@@ -947,24 +943,24 @@ def _build_concentration(
 
 def performance_excluding(tickers: list[str]) -> dict[str, Any]:
     """
-    計算排除指定標的後的策略績效。
+    Strategy performance after the named symbols are removed.
 
-    回答「扣掉最大貢獻者後，策略還有沒有 alpha」：用與完整資金曲線相同的
-    每日等權複利邏輯重算，但把指定標的的所有持倉移除；SPY 基準維持同期間
-    單純買進持有（不受排除影響）。
+    Answers whether the strategy still has alpha after the largest contributor is removed.
+    It recomputes with the same daily equal-weight compounding as the full curve, but drops every position in the named symbols.
+    The SPY benchmark stays a simple buy-and-hold over the same window and is not affected by the exclusion.
 
-    參數：
-        tickers: 要排除的股票代號清單（不分大小寫）
-    回傳：
+    Args:
+        tickers: Symbols to exclude. Case is ignored.
+    Returns:
         {
-            excluded: 實際排除的代號（大寫、去重、排序）,
-            strategy_return: 排除後策略累積報酬,
-            spy_return: 同期間 SPY 買進持有報酬,
-            outperformance: 策略 − SPY,
-            still_beats_spy: 策略是否仍高於 SPY,
-            remaining_picks_count: 排除後剩餘推薦筆數,
+            excluded: symbols actually excluded (uppercase, de-duplicated, sorted),
+            strategy_return: strategy cumulative return after the exclusion,
+            spy_return: SPY buy-and-hold over the same window,
+            outperformance: strategy minus SPY,
+            still_beats_spy: whether the strategy is still above SPY,
+            remaining_picks_count: recommendation count left after the exclusion,
         }
-        資料不足時 strategy_return / spy_return 為 None，still_beats_spy 為 False
+        When the data are insufficient, strategy_return and spy_return are None and still_beats_spy is False.
     """
     excluded = sorted({str(t).strip().upper() for t in (tickers or []) if str(t).strip()})
     empty: dict[str, Any] = {
@@ -988,7 +984,7 @@ def performance_excluding(tickers: list[str]) -> dict[str, Any]:
         empty["remaining_picks_count"] = remaining
         return empty
 
-    # SPY：同期間單純買進持有（與完整曲線相同，不受排除影響）
+    # SPY: simple buy-and-hold over the same window, same as the full curve, unaffected by the exclusion.
     spy_closes = inputs["spy_closes"]
     anchor = inputs["anchor"]
     spine = inputs["spine"]
@@ -1020,7 +1016,7 @@ def performance_excluding(tickers: list[str]) -> dict[str, Any]:
 
 
 def calculate_performance() -> dict[str, Any]:
-    """從 recommendations.csv 計算績效快照。"""
+    """Build a performance snapshot from recommendations.csv."""
     df = _load_recommendations()
     empty_summary = {
         "total_recommendations": 0,
@@ -1030,11 +1026,11 @@ def calculate_performance() -> dict[str, Any]:
     if df.empty:
         return {
             "summary": empty_summary,
-            "aggregate": "資料不足",
-            "by_sector": "資料不足",
-            "by_month": "資料不足",
-            "cumulative": "資料不足",
-            "concentration": "資料不足",
+            "aggregate": "insufficient data",
+            "by_sector": "insufficient data",
+            "by_month": "insufficient data",
+            "cumulative": "insufficient data",
+            "concentration": "insufficient data",
         }
 
     dates = [_parse_date(x) for x in df["date"].tolist()]
@@ -1052,12 +1048,12 @@ def calculate_performance() -> dict[str, Any]:
     if len(completed) < 5:
         return {
             "summary": summary,
-            "aggregate": "資料不足",
-            "by_sector": "資料不足",
-            "by_month": "資料不足",
-            "cumulative": "資料不足",
-            "concentration": "資料不足",
-            "note": "completed_1m < 5，需更多追蹤紀錄才能產生統計",
+            "aggregate": "insufficient data",
+            "by_sector": "insufficient data",
+            "by_month": "insufficient data",
+            "cumulative": "insufficient data",
+            "concentration": "insufficient data",
+            "note": "completed_1m < 5, so more tracked records are needed before statistics are meaningful",
         }
 
     r1m = pd.to_numeric(completed["return_1m"], errors="coerce")
@@ -1066,7 +1062,7 @@ def calculate_performance() -> dict[str, Any]:
 
     avg_1m = _safe_mean(r1m) or 0.0
     std_1m = _safe_std(r1m)
-    # Sharpe：以「每次推薦的 1M 報酬」近似月報酬，年化 × sqrt(12)；rf=0
+    # Sharpe treats each recommendation's 1M return as a monthly return, annualized with sqrt(12). rf=0.
     if std_1m is not None and std_1m > 1e-12:
         sharpe = (avg_1m / std_1m) * math.sqrt(12)
     else:
@@ -1104,7 +1100,7 @@ def calculate_performance() -> dict[str, Any]:
             "win_rate_1m": float((rr > 0).mean()) if len(rr) else None,
         }
 
-    # by_month：依推薦月份分組
+    # by_month: grouped by the recommendation month.
     completed = completed.copy()
     completed["_month"] = completed["date"].map(lambda x: (_parse_date(x).strftime("%Y-%m") if _parse_date(x) else "unknown"))
     by_month: list[dict[str, Any]] = []
@@ -1124,10 +1120,10 @@ def calculate_performance() -> dict[str, Any]:
         )
     by_month.sort(key=lambda x: x["month"])
 
-    # cumulative：以交易日為單位的資金曲線（持有期重疊時不可用各筆報酬連乘）
+    # cumulative: an equity curve in trading-day units. Overlapping holds must not be compounded pick by pick.
     curve_inputs = _prepare_curve_inputs(df)
-    cumulative: dict[str, Any] | str = _build_daily_equity_curve(curve_inputs) or "資料不足"
-    concentration: dict[str, Any] | str = _build_concentration(df, curve_inputs, cumulative) or "資料不足"
+    cumulative: dict[str, Any] | str = _build_daily_equity_curve(curve_inputs) or "insufficient data"
+    concentration: dict[str, Any] | str = _build_concentration(df, curve_inputs, cumulative) or "insufficient data"
 
     return {
         "summary": summary,
@@ -1141,13 +1137,13 @@ def calculate_performance() -> dict[str, Any]:
 
 def save_performance_snapshot(perf: dict[str, Any] | None = None) -> Path:
     """
-    計算績效並寫入 performance.json，回傳路徑。
+    Compute performance and write performance.json. Returns the path.
 
-    參數：
-        perf: 已算好的績效 dict；None 時自行呼叫 calculate_performance()
-              （傳入可避免重複抓價與重複 log 警告）
-    回傳：
-        performance.json 路徑
+    Args:
+        perf: An already computed performance dict. None calls calculate_performance().
+              Passing it avoids a second price fetch and a second warning.
+    Returns:
+        Path to performance.json.
     """
     if perf is None:
         perf = calculate_performance()
@@ -1159,16 +1155,14 @@ def save_performance_snapshot(perf: dict[str, Any] | None = None) -> Path:
     try:
         with open(PERFORMANCE_JSON, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
-        _log.info("已儲存績效快照：%s", PERFORMANCE_JSON)
+        _log.info("Saved performance snapshot: %s", PERFORMANCE_JSON)
     except Exception as e:  # noqa: BLE001
-        _log.warning("寫入 performance.json 失敗：%s", e)
+        _log.warning("Failed to write performance.json: %s", e)
     return PERFORMANCE_JSON
 
 
 def backfill_from_daily_picks() -> int:
-    """
-    （輔助）掃描 data/daily_picks/*.json，補寫尚未入庫的推薦。
-    """
+    """Scan data/daily_picks/*.json and write recommendations that are not stored yet."""
     picks_dir = Path(DATA_DIR) / "daily_picks"
     if not picks_dir.exists():
         return 0
@@ -1182,48 +1176,48 @@ def backfill_from_daily_picks() -> int:
             after = len(_load_recommendations())
             n += max(0, after - before)
         except Exception as e:  # noqa: BLE001
-            _log.warning("backfill %s 失敗：%s", path.name, e)
+            _log.warning("backfill %s failed: %s", path.name, e)
     return n
 
 
 if __name__ == "__main__":
-    print("掃描既有 daily_picks 並寫入 track record…")
+    print("Scanning existing daily_picks and writing the track record...")
     added = backfill_from_daily_picks()
-    print(f"新增紀錄：{added} 筆")
+    print(f"New records: {added}")
 
-    print("執行 update_actuals...")
+    print("Running update_actuals...")
     stats = update_actuals()
-    print(f"更新統計：{stats}")
+    print(f"Update stats: {stats}")
 
-    # 計算並印出當前績效
+    # Compute and print current performance.
     perf = calculate_performance()
-    print("\n=== 策略績效 ===")
+    print("\n=== Strategy performance ===")
     summary = perf["summary"]
-    print(f"總推薦數：{summary['total_recommendations']}")
-    print(f"已完成 1M 追蹤：{summary['completed_1m']}")
-    print(f"日期範圍：{summary['date_range']['first']} ~ {summary['date_range']['last']}")
+    print(f"Total recommendations: {summary['total_recommendations']}")
+    print(f"Completed 1M tracks: {summary['completed_1m']}")
+    print(f"Date range: {summary['date_range']['first']} ~ {summary['date_range']['last']}")
 
     if summary["completed_1m"] >= 5:
         agg = perf["aggregate"]
         assert isinstance(agg, dict)
-        print(f"\n1M 平均報酬：{float(agg['avg_return_1m'] or 0):+.2%}")
-        print(f"1M 勝率：{float(agg['win_rate_1m'] or 0):.1%}")
-        print(f"1M 跑贏 SPY 比例：{float(agg['beat_spy_rate_1m'] or 0):.1%}")
-        print(f"1M 平均 Alpha：{float(agg['avg_alpha_1m'] or 0):+.2%}")
+        print(f"\n1M average return: {float(agg['avg_return_1m'] or 0):+.2%}")
+        print(f"1M win rate: {float(agg['win_rate_1m'] or 0):.1%}")
+        print(f"1M beat-SPY rate: {float(agg['beat_spy_rate_1m'] or 0):.1%}")
+        print(f"1M average alpha: {float(agg['avg_alpha_1m'] or 0):+.2%}")
         print(f"Sharpe Ratio：{float(agg['sharpe_ratio_1m'] or 0):.2f}")
         cum = perf["cumulative"]
         if isinstance(cum, dict):
             dr = cum["date_range"]
-            print(f"\n資金曲線期間：{dr['start']} ~ {dr['end']}（{cum['trading_days']} 個交易日）")
-            print(f"累積策略報酬：{float(cum['strategy_cumulative_return'] or 0):+.2%}")
-            print(f"累積 SPY 報酬（買進持有）：{float(cum['spy_cumulative_return'] or 0):+.2%}")
-            print(f"超額報酬：{float(cum['outperformance'] or 0):+.2%}")
+            print(f"\nEquity-curve window: {dr['start']} ~ {dr['end']} ({cum['trading_days']} trading days)")
+            print(f"Cumulative strategy return: {float(cum['strategy_cumulative_return'] or 0):+.2%}")
+            print(f"Cumulative SPY return (buy and hold): {float(cum['spy_cumulative_return'] or 0):+.2%}")
+            print(f"Excess return: {float(cum['outperformance'] or 0):+.2%}")
 
-            # 排除最大貢獻者後的對照：回答「扣掉這檔後還有沒有 alpha」
-            print("\n=== 排除最大貢獻者後的績效對照 ===")
+            # Comparison after dropping the largest contributor: does alpha remain without that name?
+            print("\n=== Performance after dropping the largest contributor ===")
             full_s = float(cum["strategy_cumulative_return"] or 0)
             full_spy = float(cum["spy_cumulative_return"] or 0)
-            print(f"完整策略：{full_s:+.2%} vs SPY {full_spy:+.2%}")
+            print(f"Full strategy: {full_s:+.2%} vs SPY {full_spy:+.2%}")
             excl_ticker = "MU"
             if isinstance(conc := perf.get("concentration"), dict):
                 top = conc.get("top_contributor") if isinstance(conc.get("top_contributor"), dict) else {}
@@ -1233,35 +1227,35 @@ if __name__ == "__main__":
             excl_s = excl.get("strategy_return")
             excl_spy = excl.get("spy_return")
             if excl_s is not None and excl_spy is not None:
-                verdict = "仍跑贏 SPY" if excl["still_beats_spy"] else "無法跑贏 SPY"
+                verdict = "still beats SPY" if excl["still_beats_spy"] else "does not beat SPY"
                 print(
-                    f"排除 {excl_ticker}（剩 {excl['remaining_picks_count']} 筆）："
-                    f"{excl_s:+.2%} vs SPY {excl_spy:+.2%} → {verdict}"
-                    f"（超額 {float(excl['outperformance'] or 0):+.2%}）"
+                    f"Excluding {excl_ticker} ({excl['remaining_picks_count']} picks left): "
+                    f"{excl_s:+.2%} vs SPY {excl_spy:+.2%} -> {verdict}"
+                    f" (excess {float(excl['outperformance'] or 0):+.2%})"
                 )
             else:
-                print(f"排除 {excl_ticker}：資料不足，無法計算")
+                print(f"Excluding {excl_ticker}: insufficient data, cannot compute")
         else:
-            print("\n資金曲線：資料不足")
+            print("\nEquity curve: insufficient data")
 
         conc = perf["concentration"]
         if isinstance(conc, dict):
-            print("\n=== 報酬集中度（留一法歸因）===")
-            print(f"{'標的':<8}{'入選':>5}{'平均1M':>10}{'貢獻度':>11}")
+            print("\n=== Return concentration (leave-one-out) ===")
+            print(f"{'Name':<8}{'Picks':>6}{'Avg 1M':>10}{'Contrib':>11}")
             for tk, st in conc["by_ticker"].items():
                 avg = st["avg_return_1m"]
                 avg_s = f"{avg:+.2%}" if avg is not None else "—"
                 print(f"{tk:<8}{st['picks']:>5}{avg_s:>10}{st['contribution']:>+11.2%}")
             top = conc["top_contributor"]
             share = top["share_of_outperformance"]
-            share_s = f"，佔總超額報酬 {share:.1%}" if share is not None else ""
-            print(f"\n最大貢獻者：{top['ticker']}（{top['contribution']:+.2%}{share_s}）")
+            share_s = f", {share:.1%} of total excess return" if share is not None else ""
+            print(f"\nLargest contributor: {top['ticker']} ({top['contribution']:+.2%}{share_s})")
             if conc["concentration_warning"]:
                 print(f"⚠️  {conc['concentration_warning']}")
         else:
-            print("\n報酬集中度：資料不足")
+            print("\nReturn concentration: insufficient data")
     else:
-        print("\n完成追蹤紀錄不足（<5 筆），需要更多推薦累積才能產生統計")
+        print("\nFewer than 5 completed tracks. More recommendations are needed before statistics are meaningful")
 
     path = save_performance_snapshot(perf)
-    print(f"\n已寫入快照：{path}")
+    print(f"\nSnapshot written: {path}")
