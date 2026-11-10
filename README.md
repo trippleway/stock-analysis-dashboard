@@ -1,5 +1,7 @@
 # US Equity AI Sector Analysis System
 
+**Live dashboard:** https://stock-dashboard-d-yxp4hduzpjpv5danzq8qlvmo.streamlit.app
+
 A daily stock-screening dashboard for 60 US-listed AI and technology companies
 (59 with usable price history),
 plus the backtesting work done to find out whether its stock-selection signal
@@ -48,6 +50,22 @@ separately as Layer and Peer group.
 
 **Track record** — Each day's picks are logged with entry price and scores, and
 forward returns are backfilled at 1 day / 1 week / 2 weeks / 1 month against SPY.
+
+## Screenshot gallery
+
+Captured from the local dashboard on the 2026-11-07 snapshot.
+
+![Daily picks for 2026-11-07, with score breakdowns and entry levels for the top names](docs/screenshots/01-daily-picks.png)
+
+*Daily picks. The day's ranking, with a score breakdown and entry levels for each name.*
+
+![Stock deep dive for LRCX on the company profile tab](docs/screenshots/02-deep-dive.png)
+
+*Stock deep dive. LRCX (Lam Research) on the company profile tab.*
+
+![Strategy performance attribution, with the warning that the result is concentrated in one name](docs/screenshots/03-strategy-performance.png)
+
+*Strategy performance. Leave-one-out attribution. The callout warns that performance is concentrated in one name (MU, 108.9%), so the sample is too narrow to treat as consistent stock selection.*
 
 ---
 
