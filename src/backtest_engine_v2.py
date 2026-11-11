@@ -1604,7 +1604,8 @@ def _print_grid_matrix(rows: list[dict[str, Any]], key: str, title: str, higher:
     }
     direction = "higher is better" if higher else "lower is better"
     print(f"\n{title} ({direction}; * is best)", flush=True)
-    header = f"{'decay\\\\stop':<12}" + "".join(f"{stop * 100:.0f}%".rjust(8) for stop in _GRID_STOPS)
+    axis_label = "decay\\stop"
+    header = f"{axis_label:<12}" + "".join(f"{stop * 100:.0f}%".rjust(8) for stop in _GRID_STOPS)
     print(header, flush=True)
     by_key = {
         (int(row["score_decay_days"]), round(float(row["stop_loss_pct"]), 2)): row
