@@ -1,7 +1,7 @@
 {
-  "snapshot_time": "2026-11-07T23:49:22",
+  "snapshot_time": "2026-11-10T22:09:12",
   "summary": {
-    "total_recommendations": 31,
+    "total_recommendations": 30,
     "completed_1m": 27,
     "date_range": {
       "first": "2026-04-21",
@@ -244,7 +244,7 @@
   "concentration": {
     "by_ticker": {
       "MU": {
-        "picks": 7,
+        "picks": 6,
         "avg_return_1m": 0.8632011666666667,
         "contribution": 0.294742
       },
@@ -288,7 +288,7 @@
       "ticker": "MU",
       "contribution": 0.294742,
       "share_of_outperformance": 1.0887,
-      "picks": 7
+      "picks": 6
     },
     "concentration_warning": "Performance is highly concentrated in one name, so the sample is a weak representation"
   }

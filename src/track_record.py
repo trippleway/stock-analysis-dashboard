@@ -404,12 +404,14 @@ def record_daily_picks(picks_result: dict[str, Any]) -> None:
                 existing_keys.add((d0.isoformat(), t0))
 
     new_rows: list[dict[str, Any]] = []
+    picks_tickers: set[str] = set()
     for i, p in enumerate(picks, start=1):
         if not isinstance(p, dict):
             continue
         ticker = str(p.get("ticker") or "").strip().upper()
         if not ticker:
             continue
+        picks_tickers.add(ticker)
         if (day_str, ticker) in existing_keys:
             _log.info("Record already exists, skipped: %s %s", day_str, ticker)
             continue
@@ -454,17 +456,50 @@ def record_daily_picks(picks_result: dict[str, Any]) -> None:
         new_rows.append(row)
         existing_keys.add((day_str, ticker))
 
-    if not new_rows:
+    # A re-run on the same day can select a different set of names. Drop the rows
+    # for this day that are no longer selected, so one date never holds more than
+    # one top-N list. Only rows still open are dropped: once forward returns have
+    # been written the row is real tracking data and is kept.
+    dropped = 0
+    if picks_tickers and not existing.empty:
+        def _is_stale(row: pd.Series) -> bool:
+            d0 = _parse_date(row.get("date"))
+            if not d0 or d0.isoformat() != day_str:
+                return False
+            if str(row.get("status") or "").strip().lower() != "open":
+                return False
+            return str(row.get("ticker") or "").strip().upper() not in picks_tickers
+
+        stale = existing.apply(_is_stale, axis=1)
+        dropped = int(stale.sum())
+        if dropped:
+            for t in existing.loc[stale, "ticker"].tolist():
+                _log.info("record_daily_picks: dropped superseded same-day row %s %s", day_str, t)
+            existing = existing.loc[~stale].reset_index(drop=True)
+
+    if not new_rows and not dropped:
         _log.info("record_daily_picks: no new rows to write (%s)", day_str)
         return
 
-    add_df = _ensure_csv_schema(pd.DataFrame(new_rows))
-    if existing.empty:
-        merged = add_df
+    frames: list[pd.DataFrame] = []
+    if not existing.empty:
+        frames.append(_ensure_csv_schema(existing))
+    if new_rows:
+        frames.append(_ensure_csv_schema(pd.DataFrame(new_rows)))
+    if not frames:
+        merged = _ensure_csv_schema(existing)
+    elif len(frames) == 1:
+        merged = frames[0]
     else:
-        merged = pd.concat([_ensure_csv_schema(existing), add_df], ignore_index=True)
+        merged = pd.concat(frames, ignore_index=True)
     _save_recommendations(merged)
-    _log.info("record_daily_picks: added %s rows (%s) -> %s", len(new_rows), day_str, RECOMMENDATIONS_CSV)
+    _log.info(
+        "record_daily_picks: added %s rows, dropped %s superseded rows (%s) -> %s",
+        len(new_rows),
+        dropped,
+        day_str,
+        RECOMMENDATIONS_CSV,
+    )
 
 
 def update_actuals(days_lookback: int = 45) -> dict[str, Any]:
