@@ -1,0 +1,107 @@
+# Runs the full pipeline and publishes the result to the public demo repository.
+#
+# Triggers are schedule and workflow_dispatch only. Never add pull_request or
+# pull_request_target: secrets would then be reachable from a fork's PR.
+#
+# A failure anywhere stops the job before the push step, so the demo keeps the
+# last snapshot that passed validation.
+
+name: Daily pipeline
+
+on:
+  schedule:
+    # 22:00 UTC is after the 16:00 US cash close in both EST and EDT.
+    - cron: "0 22 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Cache the FinBERT weights
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: finbert-${{ runner.os }}-prosusai
+
+      - name: Run the pipeline
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python src/daily_picker.py
+
+      - name: Build the demo snapshot
+        run: python scripts/export_to_demo.py --out build/demo_snapshot
+
+      - name: Validate the snapshot before publishing
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          out = Path("build/demo_snapshot")
+          required = [
+              "manifest.json", "daily.json", "universe.json",
+              "prices.csv", "recommendations.csv", "performance.json",
+          ]
+          missing = [n for n in required if not (out / n).is_file()]
+          if missing:
+              sys.exit(f"Snapshot is missing {missing}")
+
+          universe = json.loads((out / "universe.json").read_text(encoding="utf-8"))
+          scored = sum(1 for t in universe["tickers"] if t.get("in_score_snapshot"))
+          if scored < 40:
+              sys.exit(f"Only {scored} tickers scored; refusing to publish a thin snapshot")
+
+          daily = json.loads((out / "daily.json").read_text(encoding="utf-8"))
+          if len(daily.get("picks", [])) != 3:
+              sys.exit("daily.json does not hold exactly 3 picks")
+
+          print(f"Snapshot OK: {scored} tickers scored, picks "
+                f"{[p['ticker'] for p in daily['picks']]}")
+          PY
+
+      - name: Publish to the demo repository
+        env:
+          DEMO_REPO_TOKEN: ${{ secrets.DEMO_REPO_TOKEN }}
+        run: |
+          set -e
+          git clone --quiet --depth 1 \
+            "https://x-access-token:${DEMO_REPO_TOKEN}@github.com/trippleway/stock-dashboard-demo.git" \
+            /tmp/demo
+          rm -rf /tmp/demo/data/latest
+          mkdir -p /tmp/demo/data/latest
+          cp build/demo_snapshot/* /tmp/demo/data/latest/
+          cd /tmp/demo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/latest
+          if git diff --staged --quiet; then
+            echo "No snapshot changes to publish"
+            exit 0
+          fi
+          git commit -m "Publish pipeline snapshot $(date -u +%Y-%m-%d) [skip ci]"
+          git push origin HEAD:main
+          echo "Published to stock-dashboard-demo"
