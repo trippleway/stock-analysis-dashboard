@@ -93,6 +93,44 @@ jobs:
             > /tmp/track_rows_before
           echo "Track record rows before this run: $(cat /tmp/track_rows_before)"
 
+      - name: Restore company profiles from the demo repository
+        # Each profile costs one Claude call and changes rarely, so profiles are
+        # kept between runs in the demo's universe.json. profile_fetcher's own
+        # 90-day expiry then decides which ones to refresh.
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          src = Path("/tmp/demo-state/data/latest/universe.json")
+          out = Path("data/cache/profiles")
+          out.mkdir(parents=True, exist_ok=True)
+          restored = 0
+          if src.is_file():
+              for t in json.loads(src.read_text(encoding="utf-8")).get("tickers", []):
+                  profile = t.get("profile")
+                  if isinstance(profile, dict) and profile:
+                      (out / f"{t['ticker']}.json").write_text(
+                          json.dumps(profile, ensure_ascii=False), encoding="utf-8"
+                      )
+                      restored += 1
+          print(f"Restored {restored} company profiles from the demo repository")
+          PY
+
+      - name: Fetch missing or expired company profiles
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "src")
+          import config
+          from profile_fetcher import get_profiles_batch
+
+          got = get_profiles_batch(list(config.ALL_STOCKS), show_progress=False)
+          print(f"Company profiles available: {sum(1 for v in got.values() if v)}/{len(got)}")
+          PY
+
       - name: Run the pipeline
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -126,6 +164,12 @@ jobs:
           after = sum(1 for _ in csv.DictReader(open(out / "recommendations.csv", encoding="utf-8")))
           if after < before:
               sys.exit(f"Track record shrank from {before} to {after} rows; refusing to publish")
+
+          profiled = sum(1 for t in universe["tickers"] if t.get("profile"))
+          if profiled == 0:
+              sys.exit("No company profiles in the snapshot; refusing to publish")
+          if profiled < 40:
+              print(f"::warning::Only {profiled} of {len(universe['tickers'])} tickers have a company profile")
 
           daily = json.loads((out / "daily.json").read_text(encoding="utf-8"))
           if len(daily.get("picks", [])) != 3:
