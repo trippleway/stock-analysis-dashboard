@@ -10,8 +10,11 @@ name: Daily pipeline
 
 on:
   schedule:
-    # 22:00 UTC is after the 16:00 US cash close in both EST and EDT.
-    - cron: "0 22 * * 1-5"
+    # GitHub cron runs in UTC and has no daylight-saving awareness, so 8:30 New
+    # York time needs two entries. The gate job below lets only the one that
+    # matches the current offset through.
+    - cron: "30 12 * * 1-5"  # 8:30 ET while daylight time is in effect (UTC-4)
+    - cron: "30 13 * * 1-5"  # 8:30 ET while standard time is in effect (UTC-5)
   workflow_dispatch:
 
 permissions:
@@ -22,7 +25,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - name: Let through only the cron that matches 8:30 New York time
+        id: check
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          if [ -z "$SCHEDULE" ]; then
+            echo "Manual run"; echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          offset=$(TZ=America/New_York date +%z)
+          if { [ "$offset" = "-0400" ] && [ "$SCHEDULE" = "30 12 * * 1-5" ]; } || \
+             { [ "$offset" = "-0500" ] && [ "$SCHEDULE" = "30 13 * * 1-5" ]; }; then
+            echo "Cron $SCHEDULE matches New York offset $offset"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Cron $SCHEDULE is for the other half of the year (offset $offset); skipping"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   run:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
