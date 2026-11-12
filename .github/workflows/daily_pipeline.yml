@@ -47,6 +47,24 @@ jobs:
           path: ~/.cache/huggingface
           key: finbert-${{ runner.os }}-prosusai
 
+      - name: Restore the track record from the demo repository
+        # This workflow never commits back to this repository, so the committed
+        # track record stops at the last manual commit. The demo repository holds
+        # the running history. Seed from it, or every run would rebuild the
+        # record from stale history and drop the previous day's picks.
+        run: |
+          git clone --quiet --depth 1 \
+            https://github.com/trippleway/stock-dashboard-demo.git /tmp/demo-state
+          for f in recommendations.csv performance.json; do
+            if [ -f "/tmp/demo-state/data/latest/$f" ]; then
+              cp "/tmp/demo-state/data/latest/$f" "data/track_record/$f"
+              echo "Restored $f from the demo repository"
+            fi
+          done
+          python -c "import csv; print(sum(1 for _ in csv.DictReader(open('data/track_record/recommendations.csv'))))" \
+            > /tmp/track_rows_before
+          echo "Track record rows before this run: $(cat /tmp/track_rows_before)"
+
       - name: Run the pipeline
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -74,6 +92,12 @@ jobs:
           scored = sum(1 for t in universe["tickers"] if t.get("in_score_snapshot"))
           if scored < 40:
               sys.exit(f"Only {scored} tickers scored; refusing to publish a thin snapshot")
+
+          import csv
+          before = int(Path("/tmp/track_rows_before").read_text().strip())
+          after = sum(1 for _ in csv.DictReader(open(out / "recommendations.csv", encoding="utf-8")))
+          if after < before:
+              sys.exit(f"Track record shrank from {before} to {after} rows; refusing to publish")
 
           daily = json.loads((out / "daily.json").read_text(encoding="utf-8"))
           if len(daily.get("picks", [])) != 3:
